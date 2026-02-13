@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sendou Utils</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 320px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+
+    .header p {
+      font-size: 13px;
+      opacity: 0.9;
+    }
+
+    .info-box {
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .info-box h2 {
+      font-size: 14px;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+
+    .info-box p {
+      font-size: 12px;
+      line-height: 1.6;
+      opacity: 0.9;
+    }
+
+    .info-box ul {
+      margin-left: 16px;
+      margin-top: 8px;
+    }
+
+    .info-box li {
+      font-size: 12px;
+      line-height: 1.6;
+      opacity: 0.9;
+      margin-bottom: 4px;
+    }
+
+    .status {
+      text-align: center;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .icon {
+      font-size: 32px;
+      margin-bottom: 8px;
+    }
+
+    a {
+      color: white;
+      text-decoration: underline;
+    }
+
+    input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      font-size: 13px;
+      margin-top: 8px;
+      margin-bottom: 8px;
+    }
+
+    input::placeholder {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.2);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      background: rgba(255, 255, 255, 0.3);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .success {
+      color: #4ade80;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .current-user {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      margin-top: 8px;
+      text-align: center;
+      font-weight: 600;
+    }
+
+    /* Toggle switch styles */
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .toggle-label {
+      font-size: 12px;
+      flex: 1;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.2);
+      transition: 0.3s;
+      border-radius: 24px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 2px;
+      bottom: 2px;
+      background-color: white;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .toggle-slider {
+      background-color: rgba(255, 255, 255, 0.4);
+      border-color: rgba(255, 255, 255, 0.6);
+    }
+
+    input:checked + .toggle-slider:before {
+      transform: translateX(20px);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="icon">📊</div>
+    <h1>Sendou Utils</h1>
+    <p>Utilities for sendou.ink</p>
+  </div>
+
+  <div class="info-box">
+    <h2>Your Username</h2>
+    <p style="font-size: 11px; margin-bottom: 8px;">The extension should auto-detect your username. If it doesn't work, set it manually:</p>
+    <input type="text" id="usernameInput" placeholder="Enter your sendou.ink username">
+    <button id="saveUsername">Save Username</button>
+    <div id="currentUser" class="current-user" style="display: none;"></div>
+    <div id="saveMessage" class="success" style="display: none;"></div>
+  </div>
+
+  <div class="info-box">
+    <h2>Features</h2>
+    <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 8px;">
+      <div class="toggle-container">
+        <span class="toggle-label">📊 Show shared tournaments</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="showTournaments" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="toggle-container">
+        <span class="toggle-label">🔫 Show weapons</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="showWeapons" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h2>How to use</h2>
+    <ul>
+      <li>Visit any page on <a href="https://sendou.ink" target="_blank">sendou.ink</a></li>
+      <li>Enable/disable features above</li>
+      <li>Look for icons next to usernames (not in header/footer)</li>
+      <li>📊 Hover to view shared tournaments</li>
+      <li>🔫 Hover to view weapons</li>
+    </ul>
+  </div>
+
+  <div class="status">
+    <p id="statusText">Extension is active on sendou.ink</p>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
