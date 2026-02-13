@@ -5,7 +5,7 @@ A Chrome extension that displays match history between you and other users on se
 ## Features
 
 - 📊 Shows an expandable button next to every user on sendou.ink
-- 🎯 Displays the last 3 matches between you and that user
+- 🎯 Displays the most recent matches between you and that user, as friends or foe
 - 🏆 Includes tournament names with direct links
 - 🎨 Beautiful, modern UI with dark mode support
 - ⚡ Fast and lightweight
