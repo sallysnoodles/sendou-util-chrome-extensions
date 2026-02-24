@@ -4,7 +4,6 @@ class MatchHistoryExtension {
   constructor() {
     this.DEBUG = true; // Set to false to disable debug logging
     this.loggedInUser = null;
-    this.processedUsers = new Set();
     this.showTournaments = true; // Default to true
     this.showWeapons = true; // Default to true
     this.init();
@@ -136,12 +135,15 @@ class MatchHistoryExtension {
 
   observePage() {
     // Use MutationObserver to detect dynamically added user elements
+    let timeoutId = null;
     const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.addedNodes.length) {
-          this.processExistingUsers();
-        }
+      // Debounce to avoid processing too frequently
+      if (timeoutId) {
+        clearTimeout(timeoutId);
       }
+      timeoutId = setTimeout(() => {
+        this.processExistingUsers();
+      }, 100);
     });
 
     observer.observe(document.body, {
@@ -160,19 +162,22 @@ class MatchHistoryExtension {
         return;
       }
 
+      // Skip if already wrapped (check if parent is our wrapper)
+      if (link.parentElement?.classList.contains('match-history-wrapper')) {
+        return;
+      }
+
       const href = link.getAttribute('href');
       const match = href.match(/\/u\/([^\/\?#]+)/);
 
       if (match) {
         const username = match[1];
-        const uniqueId = `${href}-${link.textContent}`;
 
-        // Skip if already processed or if it's the logged-in user
-        if (this.processedUsers.has(uniqueId) || username === this.loggedInUser) {
+        // Skip if it's the logged-in user
+        if (username === this.loggedInUser) {
           return;
         }
 
-        this.processedUsers.add(uniqueId);
         this.addMatchHistoryBlock(link, username);
       }
     });
@@ -192,8 +197,8 @@ class MatchHistoryExtension {
   }
 
   addMatchHistoryBlock(userElement, username) {
-    // Check if already has a match history block
-    if (userElement.parentElement.querySelector('.match-history-container')) {
+    // Check if this specific user link is already wrapped
+    if (userElement.parentElement.classList.contains('match-history-wrapper')) {
       return;
     }
 
