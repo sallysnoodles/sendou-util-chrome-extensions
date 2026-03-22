@@ -6,6 +6,7 @@ class MatchHistoryExtension {
     this.loggedInUser = null;
     this.showTournaments = true; // Default to true
     this.showWeapons = true; // Default to true
+    this.lutiData = null; // LUTI division lookup: username/customUrl -> {division, teamName, teamId}
     this.init();
   }
 
@@ -23,8 +24,14 @@ class MatchHistoryExtension {
     // Load feature settings
     await this.loadSettings();
 
-    // Get logged-in user
+    // Load LUTI division data
+    await this.loadLutiData();
+
+    // Get logged-in user (retry until found since React may not have rendered yet)
     await this.getLoggedInUser();
+    if (!this.loggedInUser) {
+      this.retryUserDetection();
+    }
 
     // Start observing the page for user elements
     this.observePage();
@@ -44,78 +51,40 @@ class MatchHistoryExtension {
     }
   }
 
+  async loadLutiData() {
+    try {
+      const url = chrome.runtime.getURL('data/luti_s17_divisions.json');
+      const response = await fetch(url);
+      const teams = await response.json();
+      // Build lookup by lowercase username and customUrl
+      this.lutiData = new Map();
+      for (const team of teams) {
+        const info = { division: team.division, teamName: team.teamName, teamId: team.teamId };
+        for (const player of team.players) {
+          this.lutiData.set(player.username.toLowerCase(), info);
+          if (player.customUrl) {
+            this.lutiData.set(player.customUrl.toLowerCase(), info);
+          }
+          if (player.discordId) {
+            this.lutiData.set(player.discordId, info);
+          }
+        }
+      }
+      this.log(`Loaded LUTI data: ${this.lutiData.size} player entries`);
+    } catch (e) {
+      this.error('Could not load LUTI division data:', e);
+    }
+  }
+
+  getLutiInfo(username) {
+    if (!this.lutiData) return null;
+    return this.lutiData.get(username.toLowerCase()) || null;
+  }
+
   async getLoggedInUser() {
     this.log('Detecting logged-in user...');
 
-    // Method 1: Check specific header layout classes (most reliable for sendou.ink)
-    const headerUserSelectors = [
-      '.layout__header__right-container .layout__user-item a[href*="/u/"]',
-      '.layout__user-item a[href*="/u/"]',
-      '.layout__header__right-container a[href*="/u/"]'
-    ];
-
-    for (const selector of headerUserSelectors) {
-      this.log(`Trying selector: ${selector}`);
-      const element = document.querySelector(selector);
-      if (element) {
-        const href = element.getAttribute('href');
-        this.log(`Found element with href: ${href}`);
-        const match = href?.match(/\/u\/([^\/\?#]+)/);
-        if (match) {
-          this.loggedInUser = match[1];
-          this.log('✓ Found logged-in user via header layout:', this.loggedInUser);
-          return;
-        }
-      }
-    }
-
-    // Method 2: Check localStorage/sessionStorage
-    const storageKeys = ['user', 'currentUser', 'loggedInUser', 'auth', 'session', 'profile'];
-    for (const key of storageKeys) {
-      const stored = localStorage.getItem(key) || sessionStorage.getItem(key);
-      if (stored) {
-        try {
-          const userData = JSON.parse(stored);
-          const username = userData.username || userData.discordName || userData.name || userData.customUrl;
-          if (username) {
-            this.loggedInUser = username;
-            this.log('✓ Found logged-in user via storage:', this.loggedInUser);
-            return;
-          }
-        } catch (e) {
-          // Not JSON, maybe it's just the username
-          if (stored.length > 0 && stored.length < 50 && !stored.includes('{')) {
-            this.loggedInUser = stored;
-            this.log('✓ Found logged-in user via storage (plain text):', this.loggedInUser);
-            return;
-          }
-        }
-      }
-    }
-
-    // Method 3: Check for user menu or settings link
-    const userMenuSelectors = [
-      '[data-testid="user-menu"] a[href*="/u/"]',
-      '[aria-label*="User menu"] a[href*="/u/"]',
-      'button[aria-label*="User"] ~ * a[href*="/u/"]',
-      'a[href*="/u/"][href*="/settings"]',
-      'a[href*="/u/"][aria-label*="Profile"]',
-    ];
-
-    for (const selector of userMenuSelectors) {
-      const element = document.querySelector(selector);
-      if (element) {
-        const href = element.getAttribute('href');
-        const match = href?.match(/\/u\/([^\/\?#]+)/);
-        if (match) {
-          this.loggedInUser = match[1];
-          this.log('✓ Found logged-in user via user menu:', this.loggedInUser);
-          return;
-        }
-      }
-    }
-
-    // Method 4: Check if manually set via extension storage
+    // Method 1: Check if manually set via extension storage (highest priority)
     try {
       const result = await chrome.storage.local.get(['manualUsername']);
       if (result.manualUsername) {
@@ -127,10 +96,79 @@ class MatchHistoryExtension {
       // Chrome storage not available, skip
     }
 
-    this.error('✗ Could not detect logged-in user. Are you logged in?');
-    this.error('  The extension requires you to be logged in to sendou.ink');
-    this.error('  You can manually set your username by clicking the extension icon');
-    this.error('  Or run in console: chrome.storage.local.set({ manualUsername: "yourUsername" })');
+    // Method 2: Parse React Router context stream data embedded in <script> tags
+    // The logged-in user is in the turbo-stream as: ..."user",{...},"username","...",...,"customUrl","..."
+    const scripts = document.querySelectorAll('script');
+    for (const script of scripts) {
+      const text = script.textContent;
+      if (!text || !text.includes('__reactRouterContext') || !text.includes('streamController.enqueue')) continue;
+
+      // Extract the JSON array string from the enqueue call
+      const match = text.match(/streamController\.enqueue\("(.+)"\)/s);
+      if (!match) continue;
+
+      try {
+        // Unescape the JS string literal by letting JSON.parse handle it
+        const unescaped = JSON.parse('"' + match[1] + '"');
+        const data = JSON.parse(unescaped);
+
+        // Find "user" key followed by an object, then look for "customUrl" or "username"
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] === 'user' && i + 1 < data.length && typeof data[i + 1] === 'object' && data[i + 1] !== null) {
+            const userObj = data[i + 1];
+            // In turbo-stream, object {"_N": V} means data[N] is the field name, data[V] is the field value
+            // e.g., {"_12":13, "_22":23} with data[12]="username", data[13]=<value>, data[22]="customUrl", data[23]=<value>
+            let customUrl = null;
+            let username = null;
+
+            for (const k in userObj) {
+              const keyIdx = parseInt(k.slice(1)); // _12 -> 12
+              const valIdx = userObj[k];           // 13
+              if (isNaN(keyIdx) || keyIdx < 0 || keyIdx >= data.length) continue;
+              if (typeof valIdx !== 'number' || valIdx < 0 || valIdx >= data.length) continue;
+
+              if (data[keyIdx] === 'customUrl' && typeof data[valIdx] === 'string') {
+                customUrl = data[valIdx];
+              }
+              if (data[keyIdx] === 'username' && typeof data[valIdx] === 'string') {
+                username = data[valIdx];
+              }
+            }
+
+            if (customUrl) {
+              this.loggedInUser = customUrl;
+              this.log('✓ Found logged-in user via React Router context (customUrl):', this.loggedInUser);
+              return;
+            }
+            if (username) {
+              this.loggedInUser = username;
+              this.log('✓ Found logged-in user via React Router context (username):', this.loggedInUser);
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        this.log('Failed to parse React Router context:', e.message);
+      }
+    }
+
+    this.log('Could not detect logged-in user yet, will retry...');
+  }
+
+  retryUserDetection() {
+    let attempts = 0;
+    const maxAttempts = 20;
+    const intervalId = setInterval(async () => {
+      attempts++;
+      await this.getLoggedInUser();
+      if (this.loggedInUser || attempts >= maxAttempts) {
+        clearInterval(intervalId);
+        if (!this.loggedInUser) {
+          this.error('✗ Could not detect logged-in user after retries. Are you logged in?');
+          this.error('  You can manually set your username by clicking the extension icon');
+        }
+      }
+    }, 500);
   }
 
   observePage() {
@@ -322,7 +360,20 @@ class MatchHistoryExtension {
       this.log(`Found ${result.matches.length} shared tourneys`);
 
       if (result.matches.length === 0) {
+        let lutiBannerHTML = '';
+        const lutiInfo = this.getLutiInfo(username);
+        if (lutiInfo) {
+          const teamUrl = `https://sendou.ink/to/3192/teams/${lutiInfo.teamId}`;
+          lutiBannerHTML = `
+            <div class="luti-division-banner">
+              <span class="luti-division-label">LUTI S17</span>
+              <span class="luti-division-value">Division ${this.escapeHtml(lutiInfo.division)}</span>
+              <a href="${teamUrl}" target="_blank" class="luti-team-link">${this.escapeHtml(lutiInfo.teamName)}</a>
+            </div>
+          `;
+        }
         contentElement.innerHTML = `
+          ${lutiBannerHTML}
           <div class="match-history-empty">
             No shared tourneys found between you and ${username}
           </div>
@@ -331,7 +382,7 @@ class MatchHistoryExtension {
       }
 
       // Render matches with time range info
-      this.renderMatches(result.matches, result.timeRangeMonths, contentElement);
+      this.renderMatches(result.matches, result.timeRangeMonths, contentElement, username);
     } catch (error) {
       this.error('Error loading shared tournaments:', error);
       contentElement.innerHTML = `
@@ -371,7 +422,7 @@ class MatchHistoryExtension {
       const doc = parser.parseFromString(html, 'text/html');
 
       // Find weapon elements in the parsed HTML
-      const weaponElements = doc.querySelectorAll('.u__weapon');
+      const weaponElements = doc.querySelectorAll('img[src*="/static-assets/img/main-weapons-outlined"]');
       this.log(`Found ${weaponElements.length} weapon elements`);
 
       if (weaponElements.length === 0) {
@@ -385,10 +436,7 @@ class MatchHistoryExtension {
 
       // Extract weapon data
       const weapons = [];
-      for (const weaponEl of weaponElements) {
-        const img = weaponEl.querySelector('img');
-        if (!img) continue;
-
+      for (const img of weaponElements) {
         const weaponName = img.getAttribute('alt') || img.getAttribute('title') || 'Unknown Weapon';
         let weaponImage = img.getAttribute('src') || '';
 
@@ -781,15 +829,32 @@ class MatchHistoryExtension {
     }));
   }
 
-  renderMatches(matches, timeRangeMonths, contentElement) {
+  renderMatches(matches, timeRangeMonths, contentElement, username) {
     // Create header text based on number of tournaments and time range
     const count = matches.length;
     const monthText = timeRangeMonths === 1 ? 'month' : 'months';
     const tourneyText = count === 1 ? 'shared tourney' : 'shared tourneys';
     const headerText = `${count} ${tourneyText} in the last ${timeRangeMonths} ${monthText}`;
 
+    // Build LUTI division banner if available
+    let lutiBannerHTML = '';
+    if (username) {
+      const lutiInfo = this.getLutiInfo(username);
+      if (lutiInfo) {
+        const teamUrl = `https://sendou.ink/to/3192/teams/${lutiInfo.teamId}`;
+        lutiBannerHTML = `
+          <div class="luti-division-banner">
+            <span class="luti-division-label">LUTI S17</span>
+            <span class="luti-division-value">Division ${this.escapeHtml(lutiInfo.division)}</span>
+            <a href="${teamUrl}" target="_blank" class="luti-team-link">${this.escapeHtml(lutiInfo.teamName)}</a>
+          </div>
+        `;
+      }
+    }
+
     const html = `
       <div class="match-history-list">
+        ${lutiBannerHTML}
         <div class="match-history-header">${headerText}</div>
         ${matches.map(match => {
           // Check if they were teammates (from mates data, not just same placement)

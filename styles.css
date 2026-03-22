@@ -319,6 +319,59 @@
   font-style: italic;
 }
 
+/* LUTI Division Banner */
+.luti-division-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #667eea20 0%, #764ba220 100%);
+  border: 1px solid #667eea40;
+  font-size: 12px;
+}
+
+.luti-division-label {
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #667eea;
+  flex-shrink: 0;
+}
+
+.luti-division-value {
+  font-weight: 600;
+  color: #333;
+  flex-shrink: 0;
+}
+
+.luti-team-link {
+  color: #667eea;
+  text-decoration: none;
+  font-weight: 500;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.luti-team-link:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+  .luti-division-banner {
+    background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+    border-color: #667eea30;
+  }
+
+  .luti-division-value {
+    color: #e0e0e0;
+  }
+}
+
 /* Ensure the content block appears above other elements */
 .match-history-content::before {
   content: '';
