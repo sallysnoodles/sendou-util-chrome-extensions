@@ -1,141 +1,69 @@
-# 🚀 Quick Start Guide
+# Quick Start
 
-## Step 1: Generate Icons (5 minutes)
+## 1. Load the Extension
 
-1. Open `generate-icons.html` in your browser
-2. Click the download buttons for all three icons
-3. Move the downloaded files to the `icons/` folder
+1. Open `chrome://extensions/`.
+2. Enable **Developer mode**.
+3. Click **Load unpacked**.
+4. Select this repository folder.
 
-## Step 2: Test the API Parser (Optional but Recommended)
+## 2. Open Sendou
 
-Before installing the extension, test if the API parser works:
+1. Go to [https://sendou.ink](https://sendou.ink).
+2. Log in.
+3. Reload the page after loading the extension.
 
-1. **Go to [https://sendou.ink](https://sendou.ink)** (important - must be on the actual site)
-2. **Press F12** to open DevTools
-3. **Go to the Console tab**
-4. **Copy the entire contents of `test-in-browser.js`**
-5. **Paste into the console and press Enter**
+## 3. Use the Popups
 
-The script will automatically test with the user "noodlesspl" and show results.
+- Hover 📊 next to a user to load shared tournaments.
+- Hover 🔫 next to a user to load weapons from their profile.
+- Header/footer/nav links are intentionally ignored.
 
-**To test with your own username:**
-```javascript
-await testCommonTournaments('noodlesspl', 'yourUsername')
+## 4. Set Username Manually If Needed
+
+If the extension cannot detect your logged-in user:
+
+1. Click the extension icon in Chrome.
+2. Enter your sendou.ink username.
+3. Click **Save Username**.
+
+Manual username takes priority over auto-detection. Click **Clear Manual Username** to return to auto-detection.
+
+## 5. Verify Requests
+
+Open DevTools Console and look for `[Match History]` logs.
+
+Shared tournaments use:
+
+```text
+https://sendou.ink/u/{username}/results.data?all=true
 ```
 
-If you see tournaments listed, the parser is working! ✅
+Weapon popups fetch:
 
-**Why not use test-api-parser.html?**
-That file can't access sendou.ink's API due to CORS (browser security). The console test bypasses this since you're on sendou.ink itself.
-
-## Step 3: Install the Extension
-
-1. Open Chrome
-2. Go to `chrome://extensions/`
-3. Enable **"Developer mode"** (toggle in top-right)
-4. Click **"Load unpacked"**
-5. Select the `sendou-match-history-extension` folder
-6. You should see the extension appear!
-
-## Step 4: Test on Sendou.ink
-
-1. Go to [https://sendou.ink](https://sendou.ink)
-2. **Log in to your account** (required!)
-3. Navigate to any page with usernames:
-   - Tournament pages
-   - User profiles
-   - Leaderboards
-4. Look for the 📊 icon next to usernames
-5. Hover over it to see common tournaments
-
-## What It Shows
-
-The extension displays:
-- **Last 3 common tournaments** between you and the other user
-- **Tournament name** with a clickable link
-- **Your placement** in that tournament
-- **Tournament date**
-
-## Troubleshooting
-
-### No 📊 icons appearing
-- Make sure you're on sendou.ink
-- Check that the extension is enabled in `chrome://extensions/`
-- Try refreshing the page
-- Open DevTools Console (F12) and look for errors
-
-### "Please log in to view match history"
-- Make sure you're logged in to sendou.ink
-- The extension can't detect your username
-
-### "No matches found"
-- This means you haven't competed in the same tournaments as that user
-- Try checking different users you know you've competed against
-
-### Extension won't load
-- Make sure all files are in the folder
-- Check that `manifest.json` is valid
-- Make sure icons are in the `icons/` folder
-
-### Data not loading or parsing errors
-1. Open the `test-api-parser.html` file
-2. Test with your username
-3. Check the console for errors
-4. The raw API response will show if there are parsing issues
-
-## Debugging
-
-**Enable detailed logging:**
-1. Open the extension folder
-2. Edit `content.js`
-3. Add this at the top of the MatchHistoryExtension class:
-```javascript
-constructor() {
-  this.DEBUG = true;  // Add this line
-  this.loggedInUser = null;
-  // ... rest of code
-}
+```text
+https://sendou.ink/u/{username}
 ```
-4. Reload the extension in `chrome://extensions/`
-5. Check the browser console for detailed logs
 
-**Check API calls:**
-1. Open sendou.ink
-2. Press F12 → Network tab
-3. Filter by "Fetch/XHR"
-4. Hover over a 📊 icon
-5. You should see calls to `/u/{username}/results.data`
-6. Check if they're successful (status 200)
+## Common Problems
 
-## Next Steps
+**No icons**
 
-Once it's working:
-- Use it to find rivals and check your match history
-- Share it with friends
-- Report issues or suggest improvements
+- Confirm the extension is enabled.
+- Reload sendou.ink.
+- Check that the user link is not in header/footer/nav.
 
-## Known Limitations
+**Please log in**
 
-1. **Only shows tournaments, not individual matches**
-   - The API only provides tournament participation data
-   - If both users competed in a tournament, it will show
+- Confirm you are logged in.
+- Set a manual username in the extension popup.
 
-2. **Requires login**
-   - You must be logged in to sendou.ink
-   - The extension needs your username to compare
+**No shared tournaments**
 
-3. **No win/loss data**
-   - The API doesn't provide head-to-head match results
-   - Only shows which tournaments both players attended
+- The users may not share tournaments.
+- Check Console logs for parsed tournament counts.
 
-## Getting Help
+**Weapons missing**
 
-If you're stuck:
-1. Check the console for errors (F12)
-2. Test with `test-api-parser.html`
-3. Look at `CUSTOMIZATION_NOTES.md` for detailed info
-4. Check the `README.md` for full documentation
-
-## Enjoy!
-
-Happy squiding! 🦑
+- The profile may not list weapons.
+- sendou.ink may have changed the weapon image markup or asset path.

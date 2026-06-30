@@ -1,158 +1,82 @@
-# Recent Updates
+# Current Behavior Summary
 
-## Changes Made (Latest Version)
+## User Detection
 
-### 1. ✅ No More Header/Footer Detection
-**Problem:** The extension was picking up usernames from header/footer/nav, which could be wrong (e.g., profile page owner instead of logged-in user).
+Priority:
 
-**Solution:**
-- ❌ Removed detection from `<header>`, `<footer>`, and `<nav>` tags
-- ✅ Only checks localStorage/sessionStorage first
-- ✅ Falls back to specific user menu patterns
-- ✅ 📊 icons only appear next to users in main content, NOT in navigation
+1. Manual username saved from the extension popup (`manualUsername`)
+2. React Router root loader user data
+3. user/session/auth-like localStorage JSON
+4. stored auto-detected username (`detectedUsername`)
+5. header user link fallback
 
-### 2. ✅ Toggle to Close
-**Status:** Already implemented!
+If the page appears logged out, the extension clears `detectedUsername`.
 
-The extension already supports clicking to toggle:
-- Click 📊 → Opens match history
-- Click 📊 again → Closes match history
-- Visual feedback: Icon rotates 180° and glows when active
+## Popup Settings
 
-**Styling improvement:** Added rotation and glow effect to make it more obvious when open.
+The browser action popup supports:
 
-### 3. ✅ Manual Username Setting
-**New Feature:** You can now manually set your username if auto-detection fails.
+- Save manual username
+- Clear manual username
+- Show current user source (`Manual`, `Auto-detected`, or `Not detected`)
+- Toggle shared tournaments
+- Toggle weapons
 
-**How to use:**
-1. Click the extension icon (📊) in Chrome toolbar
-2. Enter your sendou.ink username
-3. Click "Save Username"
-4. Reload sendou.ink
+Changing settings reloads open sendou.ink tabs.
 
-**Alternative (Console):**
-```javascript
-chrome.storage.local.set({ manualUsername: "yourUsername" })
+## User Link Injection
+
+The content script scans `a[href*="/u/"]` and skips links inside:
+
+- `header`
+- `footer`
+- `nav`
+
+It also skips the logged-in user's own link when known.
+
+## Shared Tournaments
+
+The extension fetches:
+
+```text
+https://sendou.ink/u/{username}/results.data?all=true
 ```
 
-### 4. ✅ Better Debug Logging
-All logs now prefixed with `[Match History]` and show:
-- User detection status
-- API fetch progress
-- Number of tournaments found
-- Any errors that occur
+for both the logged-in user and the hovered user.
 
-## How to Update
+Shared tournaments are matched by `tournamentId`.
 
-1. Go to `chrome://extensions/`
-2. Find "Sendou.ink Match History"
-3. Click the refresh icon 🔄
-4. Reload any open sendou.ink tabs
+## Teammates
 
-## Testing the Updates
+Teammates are detected from parsed `mates` data. Equal placement is not enough.
 
-### Test 1: Username Detection
-1. Open sendou.ink (logged in)
-2. Press F12 → Console
-3. Look for: `[Match History] ✓ Found logged-in user via storage: yourUsername`
-4. If it shows your correct username → ✅ Working!
+When teammates are confirmed, the popup renders:
 
-### Test 2: No Header/Footer Icons
-1. Go to any sendou.ink page
-2. Check header and footer
-3. There should be NO 📊 icons in header/footer/nav
-4. Only in main content area → ✅ Working!
-
-### Test 3: Toggle Functionality
-1. Click a 📊 icon → Opens
-2. Click the same 📊 icon again → Closes
-3. Icon should rotate when open → ✅ Working!
-
-### Test 4: Manual Username
-1. Click extension icon in toolbar
-2. Enter your username
-3. Click "Save Username"
-4. Reload sendou.ink
-5. Check console for: `[Match History] ✓ Using manually set username: yourUsername`
-
-## Expected Behavior
-
-### Where 📊 Icons Appear
-✅ **YES - Should appear:**
-- Next to usernames in tournament brackets
-- Next to usernames in match results
-- Next to usernames in player lists
-- Next to usernames in tournament rosters
-
-❌ **NO - Should NOT appear:**
-- In the site header
-- In the site footer
-- In navigation menus
-- Next to your own username
-
-### Username Detection Priority
-1. **Manual setting** (if you set it via popup)
-2. **localStorage/sessionStorage** (automatic)
-3. **User menu links** (fallback)
-
-## Troubleshooting
-
-### Still showing "No matches found"?
-
-**Check these in Console (F12):**
-
-```
-[Match History] ✓ Found logged-in user via storage: yourUsername
-[Match History] Loading match history for: otherUser
-[Match History] User yourUsername: 25 tournaments
-[Match History] User otherUser: 18 tournaments
-[Match History] Found 3 common tournaments
+```text
+❤️ Teammates: #X
 ```
 
-**If you see:**
-- `✗ Could not detect logged-in user` → Use manual username setting
-- `Found 0 common tournaments` → You genuinely don't have common tournaments
+Otherwise it renders separate `You` and `Them` placement badges.
 
-### Wrong username detected?
+## Weapons
 
-**Solution:**
-1. Click extension icon
-2. Enter correct username manually
-3. Save and reload
+Weapon popups fetch the hovered user's profile HTML and parse current sendou.ink weapon image paths:
 
-### Icons in wrong places?
-
-Make sure you reloaded the extension after updating:
-1. `chrome://extensions/`
-2. Click refresh 🔄
-3. Reload sendou.ink
-
-## Debug Commands
-
-Run these in Console (F12) on sendou.ink:
-
-```javascript
-// Check what's in storage
-chrome.storage.local.get(['manualUsername'], r => console.log(r))
-
-// Set username manually
-chrome.storage.local.set({ manualUsername: "yourUsername" })
-
-// Clear manual username
-chrome.storage.local.remove('manualUsername')
-
-// Check localStorage
-console.log('LocalStorage:', Object.keys(localStorage))
-for (let key of Object.keys(localStorage)) {
-  console.log(key, localStorage.getItem(key).substring(0, 100))
-}
+```text
+main-weapons-outlined
+/img/main-weapons
 ```
 
-## What's Next?
+## Result Page Popup Handling
 
-If the extension is still unstable after these changes:
-1. Check the Console logs and share them
-2. Run `debug-logged-in-user.js` to see all available usernames
-3. Use manual username setting as a reliable fallback
+On `/u/{username}/results`, popups are rendered at `document.body` level to avoid being clipped by result-row/team-list containers.
 
-The manual username setting should make it 100% stable since you're explicitly telling it who you are!
+Only one popup should be active at a time.
+
+## Debugging
+
+Open DevTools Console and look for logs prefixed with:
+
+```text
+[Match History]
+```

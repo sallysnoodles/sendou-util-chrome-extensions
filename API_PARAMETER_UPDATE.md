@@ -143,7 +143,7 @@ This change complements:
 Adding `all=true` ensures the extension has access to complete tournament history for both users, improving accuracy and reducing false negatives when finding shared tourneys.
 
 The performance impact is minimal since:
-- Data is only fetched when user clicks the 📊 icon
+- Data is only fetched when the user hovers the 📊 icon
 - Results are parsed efficiently
 - Only 3 tournaments are displayed (though all are considered)
 

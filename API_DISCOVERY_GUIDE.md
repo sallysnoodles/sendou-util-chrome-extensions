@@ -1,5 +1,7 @@
 # API Discovery Guide for Sendou.ink
 
+Note: the current extension already uses `https://sendou.ink/u/{username}/results.data?all=true` for tournament data. This guide is only for future maintenance if sendou.ink changes its data routes or if a direct comparison endpoint is discovered later.
+
 Based on the workflow: User Page → Results Tab → Tournament History
 
 ## Step-by-Step: Finding the API Endpoint

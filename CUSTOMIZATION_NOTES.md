@@ -1,237 +1,106 @@
-# Customization Notes for Sendou.ink Extension
+# Maintenance Notes
 
-## Important: API Integration
+This extension is no longer a placeholder template. It uses current sendou.ink page/data shapes directly, but several parts are intentionally heuristic because sendou.ink does not expose a simple comparison endpoint for this use case.
 
-This extension is a **template** that needs to be customized for sendou.ink's actual API and HTML structure. Here's what you need to update:
+## User Link Detection
 
-## 1. User Detection (content.js)
+User popups are injected for links matching:
 
-### Current Implementation
 ```javascript
-const userLinks = document.querySelectorAll('a[href*="/u/"]');
+a[href*="/u/"]
 ```
 
-### What to Check
-1. Open sendou.ink in Chrome
-2. Right-click on a username → Inspect
-3. Note the HTML structure around usernames
-4. Update the selector if needed
+Links inside `header`, `footer`, or `nav` are skipped by `isInHeaderFooterOrNav()` so navigation/profile-tab links are not decorated.
 
-**Possible alternatives:**
-- `document.querySelectorAll('[data-user-id]')`
-- `document.querySelectorAll('.user-link')`
-- Custom selectors based on actual HTML
+## Logged-In User Detection
 
-## 2. Logged-in User Detection (content.js)
+Priority order:
 
-### Current Implementation
-```javascript
-async getLoggedInUser() {
-  const userNavElement = document.querySelector('[data-testid="user-nav"]') ||
-                         document.querySelector('nav a[href*="/u/"]');
-  // ...
-}
+1. `chrome.storage.local.manualUsername`
+2. React Router root loader user data
+3. session/auth/user-like localStorage JSON
+4. clear logged-out state, which removes `detectedUsername`
+5. stored `chrome.storage.local.detectedUsername`
+6. header user link fallback
+
+Manual username can be set or cleared from the extension popup.
+
+## Shared Tournament Data
+
+Current endpoint:
+
+```text
+https://sendou.ink/u/{username}/results.data?all=true
 ```
 
-### How to Find the Correct Selector
-1. Log in to sendou.ink
-2. Open DevTools (F12)
-3. Inspect the navigation area where your username appears
-4. Note the HTML structure
-5. Update the selectors in `getLoggedInUser()`
+`fetchMatches(username)` fetches results for the logged-in user and the hovered user, then compares parsed tournament IDs.
 
-**Check these locations:**
-- Navigation bar
-- User dropdown menu
-- Profile icon/avatar
-- localStorage/sessionStorage (check in DevTools → Application)
+`parseResults(data)` walks Remix-style encoded arrays and extracts tournament fields with heuristics:
 
-## 3. API Endpoints (content.js)
+- tournament ID
+- event name
+- start time
+- placement
+- division
+- teammates from `mates`
+- team count
 
-### Current Placeholder
+If sendou.ink changes the encoded response shape, update `parseResults()` first.
+
+## Teammate Detection
+
+Do not use equal placement as teammate proof.
+
+Current teammate logic:
+
 ```javascript
-const response = await fetch(
-  `https://sendou.ink/api/matches?user1=${this.loggedInUser}&user2=${username}&limit=3`
+const wereTeammates = tournament1.teammates.some(
+  mate => mate.toLowerCase() === otherUsernameLower
 );
 ```
 
-### How to Find Real API Endpoints
+`tournament1` is the logged-in user's tournament result. If the hovered user's username is in that result's parsed `mates` list, the extension renders the teammate badge.
 
-1. **Open sendou.ink and DevTools**
-   - Press F12
-   - Go to the Network tab
-   - Filter by "Fetch/XHR"
+## Weapon Parsing
 
-2. **Navigate to a user profile or match history**
-   - Watch for API calls in the Network tab
-   - Look for endpoints containing:
-     - "match"
-     - "tournament"
-     - "user"
-     - "history"
+Weapon popups fetch the target profile page:
 
-3. **Inspect the API Response**
-   - Click on the API call
-   - Check the "Preview" or "Response" tab
-   - Note the data structure
+```text
+https://sendou.ink/u/{username}
+```
 
-4. **Update the code**
-   - Replace the fetch URL
-   - Update the response parsing in `renderMatches()`
+Current selectors:
 
-### Example Real API Patterns
-
-**GraphQL (if sendou.ink uses GraphQL):**
 ```javascript
-const response = await fetch('https://sendou.ink/api/graphql', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    query: `
-      query MatchHistory($user1: String!, $user2: String!) {
-        matches(user1: $user1, user2: $user2, limit: 3) {
-          id
-          tournament { name, url }
-          date
-        }
-      }
-    `,
-    variables: { user1: this.loggedInUser, user2: username }
-  })
-});
+img[src*="main-weapons-outlined"]
+img[data-testid][src*="/img/main-weapons"]
 ```
 
-**REST API:**
-```javascript
-const response = await fetch(
-  `https://sendou.ink/api/v2/users/${this.loggedInUser}/matches/${username}?limit=3`
-);
-```
+Update `extractWeaponsFromProfile()` if sendou.ink changes profile markup or weapon asset paths.
 
-## 4. Data Structure Mapping
+## Popup Behavior
 
-### Update `renderMatches()` based on actual API response
+Normal pages use inline absolute-positioned popups inside `.match-history-container`.
 
-**If API returns:**
-```json
-{
-  "data": [
-    {
-      "id": "123",
-      "tournament": {
-        "name": "Tournament Name",
-        "slug": "tournament-slug"
-      },
-      "createdAt": "2024-01-15T10:30:00Z"
-    }
-  ]
-}
-```
+Individual result pages (`/u/{username}/results`) use a body-level fixed popup class so result-row/team-list containers do not clip the popup.
 
-**Update the mapping:**
-```javascript
-renderMatches(matches, contentElement) {
-  const html = `
-    <div class="match-history-list">
-      <div class="match-history-header">Last ${matches.length} match${matches.length > 1 ? 'es' : ''}</div>
-      ${matches.map(match => `
-        <div class="match-history-item">
-          <a href="/tournament/${match.tournament.slug}" target="_blank" class="match-history-link">
-            <div class="match-tournament-name">${this.escapeHtml(match.tournament.name)}</div>
-            <div class="match-date">${this.formatDate(match.createdAt)}</div>
-          </a>
-        </div>
-      `).join('')}
-    </div>
-  `;
-  contentElement.innerHTML = html;
-}
-```
+Only one popup should be active at a time.
 
-## 5. Testing Checklist
+## Testing Checklist
 
-- [ ] Can detect logged-in user correctly
-- [ ] Shows button next to all usernames
-- [ ] Button toggles the content block
-- [ ] API calls return valid data
-- [ ] Match links navigate to correct pages
-- [ ] Works on different sendou.ink pages (profiles, tournaments, etc.)
-- [ ] Handles errors gracefully (no matches, API errors, not logged in)
-- [ ] Dark mode works correctly
+- `node --check content.js`
+- `node --check popup.js`
+- Load unpacked extension in Chrome.
+- Reload sendou.ink.
+- Test 📊 and 🔫 on:
+  - User profile
+  - Individual user results page
+  - Tournament/team/user-list pages
+- Test manual username save and clear from the extension popup.
 
-## 6. Debugging
+## Common Maintenance Risks
 
-### Enable console logging
-Add to `content.js`:
-```javascript
-const DEBUG = true;
-function log(...args) {
-  if (DEBUG) console.log('[Match History]', ...args);
-}
-```
-
-### Check for errors
-1. Open DevTools Console (F12)
-2. Look for red error messages
-3. Check Network tab for failed requests
-4. Verify API responses
-
-### Common Issues
-
-**No buttons appearing:**
-- Check if user selector is correct
-- Verify the page has loaded completely
-- Check console for JavaScript errors
-
-**API calls failing:**
-- Verify the API endpoint URL
-- Check if authentication is required
-- Look at CORS errors (may need background.js)
-- Verify request/response format
-
-**Wrong match data:**
-- Check data structure mapping
-- Verify username extraction
-- Check tournament URL format
-
-## 7. Optional Enhancements
-
-### Add Authentication Headers
-If sendou.ink API requires authentication:
-```javascript
-const response = await fetch(url, {
-  headers: {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  }
-});
-```
-
-### Add Caching
-```javascript
-const CACHE_TIME = 5 * 60 * 1000; // 5 minutes
-const cache = new Map();
-
-async fetchMatches(username) {
-  const cacheKey = `${this.loggedInUser}-${username}`;
-  const cached = cache.get(cacheKey);
-
-  if (cached && Date.now() - cached.timestamp < CACHE_TIME) {
-    return cached.data;
-  }
-
-  const data = await this.fetchMatchesFromAPI(username);
-  cache.set(cacheKey, { data, timestamp: Date.now() });
-  return data;
-}
-```
-
-### Add Loading States
-Already implemented with the loading spinner!
-
-## Need Help?
-
-1. Check sendou.ink's GitHub if it's open source
-2. Look for API documentation
-3. Join sendou.ink's Discord/community
-4. Inspect network requests to reverse-engineer the API
+- Remix encoded response format changes.
+- sendou.ink profile weapon image paths change.
+- Header/nav markup changes and starts looking like content user links.
+- User custom URLs differ from usernames in ways not covered by current normalization.

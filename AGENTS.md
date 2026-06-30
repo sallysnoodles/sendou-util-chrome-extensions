@@ -13,12 +13,12 @@ Chrome extension (Manifest V3) called "Sendou Utils" for sendou.ink — a Splato
 ### Key Files
 
 - **content.js** — `MatchHistoryExtension` class injected into sendou.ink pages. Core logic:
-  - Detects logged-in user via DOM selectors, localStorage, or manual override from `chrome.storage.local`
+  - Detects logged-in user via manual override, React Router root loader data, localStorage, stored `detectedUsername`, or a header fallback
   - Uses `MutationObserver` to detect dynamically-added user links (`a[href*="/u/"]`)
   - Wraps each user link in a `.match-history-wrapper` with hover-triggered popup buttons
   - **Shared tournaments (📊)**: Fetches both users' results from `/u/{username}/results.data?all=true`, parses Remix-style encoded response (numeric references into a flat data array), finds common tournament IDs
-  - **Weapons (🔫)**: Fetches target user's profile HTML, parses `.u__weapon` elements via DOMParser
-- **popup.html / popup.js** — Extension popup for manual username override and feature toggles (tournaments, weapons) stored in `chrome.storage.local`
+  - **Weapons (🔫)**: Fetches target user's profile HTML, parses weapon image elements matching current sendou.ink weapon asset paths
+- **popup.html / popup.js** — Extension popup for manual username override, clear/manual fallback display, and feature toggles (tournaments, weapons) stored in `chrome.storage.local`
 - **background.js** — Minimal service worker (install/update logging only)
 - **styles.css** — Popup tooltip styling with dark mode support via `prefers-color-scheme`
 
@@ -26,10 +26,11 @@ Chrome extension (Manifest V3) called "Sendou Utils" for sendou.ink — a Splato
 
 1. `fetchUserResults(username)` → GET `https://sendou.ink/u/{username}/results.data?all=true` → JSON array
 2. `parseResults(data)` → Walks the Remix-encoded flat array looking for `"value"` keys followed by arrays of tournament objects. Resolves numeric references back into the data array. Extracts tournamentId, eventName, startTime, placement, division, teammates, teamCount.
-3. `findCommonTournaments()` → Matches by tournamentId across both users, detects teammate status from mates array
+3. `findCommonTournaments()` → Matches by tournamentId across both users, detects teammate status from the logged-in user's parsed mates array
 
 ### Important Patterns
 
 - The Remix API response parser (`parseResults`) uses heuristics to identify field types (e.g., 4-digit numbers = tournament IDs, large numbers = timestamps). This is fragile and may break if sendou.ink changes their response format.
+- Teammates are detected from parsed `mates` data, not equal placements.
 - User links in header/footer/nav are intentionally excluded from processing via `isInHeaderFooterOrNav()`.
 - Settings changes in popup trigger automatic reload of all sendou.ink tabs.

@@ -1,62 +1,71 @@
-# Quick Installation Guide
+# Installation Guide
 
-## Step 1: Generate Icons
+## Install Locally
 
-1. Open `generate-icons.html` in your browser
-2. Click "Download icon16.png", "Download icon48.png", and "Download icon128.png"
-3. Move the downloaded files to the `icons/` folder
+1. Clone or download this repository.
+2. Open Chrome and go to `chrome://extensions/`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select this repository folder.
+6. Open or reload sendou.ink.
 
-**OR** use any image editor to create three PNG files (16x16, 48x48, 128x128) and name them accordingly.
+There is no build step.
 
-## Step 2: Install the Extension
+## Icons
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable **Developer mode** (toggle in the top-right corner)
-3. Click **"Load unpacked"**
-4. Select the `sendou-match-history-extension` folder
-5. The extension should now appear in your extensions list
+The repository includes extension icons under `icons/`. If you replace them, keep these filenames:
 
-## Step 3: Test on Sendou.ink
+- `icons/icon16.png`
+- `icons/icon48.png`
+- `icons/icon128.png`
 
-1. Go to [https://sendou.ink](https://sendou.ink)
-2. Log in to your account
-3. Navigate to any page with user profiles
-4. Look for the 📊 icon next to usernames
-5. Click it to see the match history
+## First Run
 
-## Step 4: Customize for Real Use
+1. Log in to [sendou.ink](https://sendou.ink/).
+2. Visit a page with user links.
+3. Look for 📊 and 🔫 icons next to non-navigation user links.
+4. Hover 📊 for shared tournaments.
+5. Hover 🔫 for weapons.
 
-⚠️ **Important**: This extension uses placeholder API calls. You need to:
+## Username Settings
 
-1. Read `CUSTOMIZATION_NOTES.md` thoroughly
-2. Inspect sendou.ink's actual API using Chrome DevTools
-3. Update the API endpoints in `content.js`
-4. Test and verify the data is displaying correctly
+The extension tries to auto-detect the logged-in sendou.ink user. If that fails:
+
+1. Click the extension icon in the Chrome toolbar.
+2. Enter your sendou.ink username.
+3. Click **Save Username**.
+
+Manual username has priority. Use **Clear Manual Username** to return to auto-detection.
+
+## Feature Toggles
+
+The popup can enable or disable:
+
+- Shared tournaments
+- Weapons
+
+Changing a setting reloads open sendou.ink tabs.
 
 ## Troubleshooting
 
-**Extension not loading:**
-- Make sure all files are in the correct location
-- Check for error messages in `chrome://extensions/`
-- Verify manifest.json is valid JSON
+**Extension not loading**
 
-**Icons not showing:**
-- Generate and place icon files in the `icons/` folder
-- Or temporarily comment out icon references in manifest.json
+- Confirm `manifest.json` is valid.
+- Reload the extension at `chrome://extensions/`.
+- Check the service worker/content script errors in Chrome.
 
-**No match data:**
-- Open DevTools Console (F12) and check for errors
-- Verify you're logged in to sendou.ink
-- Update API endpoints as described in CUSTOMIZATION_NOTES.md
+**Icons do not appear**
 
-## Uninstalling
+- Make sure you are on `https://sendou.ink/*`.
+- Refresh the page after loading/reloading the extension.
+- Header, footer, and nav user links are intentionally skipped.
 
-1. Go to `chrome://extensions/`
-2. Find "Sendou.ink Match History"
-3. Click "Remove"
+**Shared tournament popup says to log in**
 
-## Next Steps
+- Confirm you are logged in to sendou.ink.
+- Open the extension popup and set your username manually.
 
-- Customize the extension (see CUSTOMIZATION_NOTES.md)
-- Test thoroughly on different pages
-- Report issues or improvements
+**No shared tournaments**
+
+- The users may not share any tournaments in parsed results.
+- Check DevTools Console for `[Match History]` logs and failed requests.
