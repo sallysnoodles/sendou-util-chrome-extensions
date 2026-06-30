@@ -81,6 +81,42 @@ class MatchHistoryExtension {
     return this.lutiData.get(username.toLowerCase()) || null;
   }
 
+  normalizeUsername(username) {
+    if (typeof username !== 'string') return null;
+
+    let normalized = username.trim();
+    if (!normalized) return null;
+
+    try {
+      normalized = decodeURIComponent(normalized);
+    } catch (e) {
+      // Keep the original value if it is not valid URI-encoded text.
+    }
+
+    normalized = normalized
+      .replace(/^https?:\/\/sendou\.ink\/u\//i, '')
+      .replace(/^\/u\//i, '')
+      .split(/[?#]/)[0]
+      .replace(/\/+$/, '')
+      .trim();
+
+    if (!normalized || normalized.includes('/')) return null;
+
+    const ignoredRoutes = new Set(['login', 'logout', 'register', 'settings']);
+    if (ignoredRoutes.has(normalized.toLowerCase())) return null;
+
+    return normalized;
+  }
+
+  setLoggedInUser(username, source) {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) return false;
+
+    this.loggedInUser = normalized;
+    this.log(`✓ Found logged-in user via ${source}:`, this.loggedInUser);
+    return true;
+  }
+
   async getLoggedInUser() {
     this.log('Detecting logged-in user...');
 
@@ -88,9 +124,9 @@ class MatchHistoryExtension {
     try {
       const result = await chrome.storage.local.get(['manualUsername']);
       if (result.manualUsername) {
-        this.loggedInUser = result.manualUsername;
-        this.log('✓ Using manually set username:', this.loggedInUser);
-        return;
+        if (this.setLoggedInUser(result.manualUsername, 'manual setting')) {
+          return;
+        }
       }
     } catch (e) {
       // Chrome storage not available, skip
@@ -98,61 +134,181 @@ class MatchHistoryExtension {
 
     // Method 2: Parse React Router context stream data embedded in <script> tags
     // The logged-in user is in the turbo-stream as: ..."user",{...},"username","...",...,"customUrl","..."
+    if (this.detectLoggedInUserFromReactRouterContext()) {
+      return;
+    }
+
+    // Method 3: Check localStorage JSON blobs for a current user object
+    if (this.detectLoggedInUserFromLocalStorage()) {
+      return;
+    }
+
+    // Method 4: Look for a current-user profile link in the site chrome
+    if (this.detectLoggedInUserFromHeader()) {
+      return;
+    }
+
+    this.log('Could not detect logged-in user yet, will retry...');
+  }
+
+  detectLoggedInUserFromReactRouterContext() {
     const scripts = document.querySelectorAll('script');
     for (const script of scripts) {
       const text = script.textContent;
       if (!text || !text.includes('__reactRouterContext') || !text.includes('streamController.enqueue')) continue;
 
-      // Extract the JSON array string from the enqueue call
-      const match = text.match(/streamController\.enqueue\("(.+)"\)/s);
-      if (!match) continue;
+      const enqueueStrings = this.extractEnqueuedStrings(text);
 
-      try {
-        // Unescape the JS string literal by letting JSON.parse handle it
-        const unescaped = JSON.parse('"' + match[1] + '"');
-        const data = JSON.parse(unescaped);
-
-        // Find "user" key followed by an object, then look for "customUrl" or "username"
-        for (let i = 0; i < data.length; i++) {
-          if (data[i] === 'user' && i + 1 < data.length && typeof data[i + 1] === 'object' && data[i + 1] !== null) {
-            const userObj = data[i + 1];
-            // In turbo-stream, object {"_N": V} means data[N] is the field name, data[V] is the field value
-            // e.g., {"_12":13, "_22":23} with data[12]="username", data[13]=<value>, data[22]="customUrl", data[23]=<value>
-            let customUrl = null;
-            let username = null;
-
-            for (const k in userObj) {
-              const keyIdx = parseInt(k.slice(1)); // _12 -> 12
-              const valIdx = userObj[k];           // 13
-              if (isNaN(keyIdx) || keyIdx < 0 || keyIdx >= data.length) continue;
-              if (typeof valIdx !== 'number' || valIdx < 0 || valIdx >= data.length) continue;
-
-              if (data[keyIdx] === 'customUrl' && typeof data[valIdx] === 'string') {
-                customUrl = data[valIdx];
-              }
-              if (data[keyIdx] === 'username' && typeof data[valIdx] === 'string') {
-                username = data[valIdx];
-              }
-            }
-
-            if (customUrl) {
-              this.loggedInUser = customUrl;
-              this.log('✓ Found logged-in user via React Router context (customUrl):', this.loggedInUser);
-              return;
-            }
-            if (username) {
-              this.loggedInUser = username;
-              this.log('✓ Found logged-in user via React Router context (username):', this.loggedInUser);
-              return;
-            }
+      for (const enqueuedString of enqueueStrings) {
+        try {
+          const data = JSON.parse(enqueuedString);
+          const username = this.findUserInReactRouterData(data);
+          if (username && this.setLoggedInUser(username, 'React Router context')) {
+            return true;
           }
+        } catch (e) {
+          this.log('Failed to parse React Router context chunk:', e.message);
         }
-      } catch (e) {
-        this.log('Failed to parse React Router context:', e.message);
       }
     }
 
-    this.log('Could not detect logged-in user yet, will retry...');
+    return false;
+  }
+
+  extractEnqueuedStrings(text) {
+    const enqueueStrings = [];
+    const enqueueCallRegex = /streamController\.enqueue\(\s*(["'])((?:\\.|(?!\1)[\s\S])*)\1\s*\)/g;
+    let match;
+
+    while ((match = enqueueCallRegex.exec(text)) !== null) {
+      try {
+        enqueueStrings.push(JSON.parse(match[1] + match[2] + match[1]));
+      } catch (e) {
+        this.log('Failed to unescape React Router context chunk:', e.message);
+      }
+    }
+
+    return enqueueStrings;
+  }
+
+  findUserInReactRouterData(data) {
+    if (!Array.isArray(data)) return null;
+
+    for (let i = 0; i < data.length; i++) {
+      const current = data[i];
+      if (current === 'user' && i + 1 < data.length) {
+        const username = this.extractUsernameFromReactRouterValue(data[i + 1], data);
+        if (username) return username;
+      }
+    }
+
+    for (const item of data) {
+      const username = this.extractUsernameFromReactRouterValue(item, data);
+      if (username) return username;
+    }
+
+    return null;
+  }
+
+  extractUsernameFromReactRouterValue(value, data) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+    const customUrl = this.getReactRouterObjectField(value, data, 'customUrl');
+    if (customUrl) return customUrl;
+
+    return this.getReactRouterObjectField(value, data, 'username');
+  }
+
+  getReactRouterObjectField(obj, data, fieldName) {
+    if (typeof obj[fieldName] === 'string') {
+      return obj[fieldName];
+    }
+
+    for (const k in obj) {
+      const valIdx = obj[k];
+      if (typeof valIdx !== 'number' || valIdx < 0 || valIdx >= data.length) continue;
+
+      const keyIdx = k.startsWith('_') ? parseInt(k.slice(1), 10) : NaN;
+      if (!Number.isNaN(keyIdx) && keyIdx >= 0 && keyIdx < data.length && data[keyIdx] === fieldName) {
+        if (typeof data[valIdx] === 'string') {
+          return data[valIdx];
+        }
+      }
+    }
+
+    return null;
+  }
+
+  detectLoggedInUserFromLocalStorage() {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        const value = localStorage.getItem(key);
+        if (!key || !/user|session|auth|viewer|me/i.test(key)) continue;
+        if (!value || !/[{[]/.test(value) || !/customUrl|username/i.test(value)) continue;
+
+        try {
+          const parsed = JSON.parse(value);
+          const username = this.findUsernameInObject(parsed);
+          if (username && this.setLoggedInUser(username, 'localStorage')) {
+            return true;
+          }
+        } catch (e) {
+          // Ignore non-JSON localStorage entries.
+        }
+      }
+    } catch (e) {
+      this.log('Could not read localStorage:', e.message);
+    }
+
+    return false;
+  }
+
+  findUsernameInObject(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 6) return null;
+
+    if (typeof value.customUrl === 'string') return value.customUrl;
+    if (typeof value.username === 'string') return value.username;
+
+    for (const child of Object.values(value)) {
+      const username = this.findUsernameInObject(child, depth + 1);
+      if (username) return username;
+    }
+
+    return null;
+  }
+
+  detectLoggedInUserFromHeader() {
+    const selectors = [
+      'header a[href*="/u/"]',
+      'nav a[href*="/u/"]',
+      '[class*="header" i] a[href*="/u/"]',
+      '[class*="nav" i] a[href*="/u/"]'
+    ];
+
+    for (const selector of selectors) {
+      for (const link of document.querySelectorAll(selector)) {
+        const username = this.extractUsernameFromHref(link.getAttribute('href'));
+        if (username && this.setLoggedInUser(username, 'header link')) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  extractUsernameFromHref(href) {
+    if (!href) return null;
+
+    try {
+      const url = new URL(href, window.location.origin);
+      if (url.hostname !== 'sendou.ink' || !url.pathname.startsWith('/u/')) return null;
+      return this.normalizeUsername(url.pathname.slice(3));
+    } catch (e) {
+      const match = href.match(/\/u\/([^\/\?#]+)/);
+      return match ? this.normalizeUsername(match[1]) : null;
+    }
   }
 
   retryUserDetection() {
@@ -163,6 +319,9 @@ class MatchHistoryExtension {
       await this.getLoggedInUser();
       if (this.loggedInUser || attempts >= maxAttempts) {
         clearInterval(intervalId);
+        if (this.loggedInUser) {
+          this.processExistingUsers();
+        }
         if (!this.loggedInUser) {
           this.error('✗ Could not detect logged-in user after retries. Are you logged in?');
           this.error('  You can manually set your username by clicking the extension icon');
@@ -206,13 +365,11 @@ class MatchHistoryExtension {
       }
 
       const href = link.getAttribute('href');
-      const match = href.match(/\/u\/([^\/\?#]+)/);
+      const username = this.extractUsernameFromHref(href);
 
-      if (match) {
-        const username = match[1];
-
+      if (username) {
         // Skip if it's the logged-in user
-        if (username === this.loggedInUser) {
+        if (this.loggedInUser && username.toLowerCase() === this.loggedInUser.toLowerCase()) {
           return;
         }
 
@@ -344,6 +501,10 @@ class MatchHistoryExtension {
 
   async loadMatchHistory(username, contentElement) {
     this.log(`Loading shared tournaments for: ${username}`);
+
+    if (!this.loggedInUser) {
+      await this.getLoggedInUser();
+    }
 
     if (!this.loggedInUser) {
       this.error('Cannot load shared tournaments - not logged in');
