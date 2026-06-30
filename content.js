@@ -7,6 +7,7 @@ class MatchHistoryExtension {
     this.showTournaments = true; // Default to true
     this.showWeapons = true; // Default to true
     this.lutiData = null; // LUTI division lookup: username/customUrl -> {division, teamName, teamId}
+    this.activePopup = null;
     this.init();
   }
 
@@ -492,22 +493,8 @@ class MatchHistoryExtension {
 
       wrapper.appendChild(tournamentsContainer);
 
-      // Hover functionality for tournaments
-      let tournamentsLoaded = false;
-      tournamentsContainer.addEventListener('mouseenter', async (e) => {
-        tournamentsContent.style.display = 'block';
-        tournamentsToggle.classList.add('active');
-
-        // Load match history on first hover
-        if (!tournamentsLoaded) {
-          tournamentsLoaded = true;
-          await this.loadMatchHistory(username, tournamentsContent);
-        }
-      });
-
-      tournamentsContainer.addEventListener('mouseleave', (e) => {
-        tournamentsContent.style.display = 'none';
-        tournamentsToggle.classList.remove('active');
+      this.setupHoverPopup(tournamentsContainer, tournamentsToggle, tournamentsContent, async () => {
+        await this.loadMatchHistory(username, tournamentsContent);
       });
     }
 
@@ -535,28 +522,114 @@ class MatchHistoryExtension {
 
       wrapper.appendChild(weaponsContainer);
 
-      // Hover functionality for weapons
-      let weaponsLoaded = false;
-      weaponsContainer.addEventListener('mouseenter', async (e) => {
-        weaponsContent.style.display = 'block';
-        weaponsToggle.classList.add('active');
-
-        // Load weapons on first hover
-        if (!weaponsLoaded) {
-          weaponsLoaded = true;
-          await this.loadWeapons(username, weaponsContent);
-        }
-      });
-
-      weaponsContainer.addEventListener('mouseleave', (e) => {
-        weaponsContent.style.display = 'none';
-        weaponsToggle.classList.remove('active');
+      this.setupHoverPopup(weaponsContainer, weaponsToggle, weaponsContent, async () => {
+        await this.loadWeapons(username, weaponsContent);
       });
     }
 
     // Wrap the user link and icons together to keep them inline
     const parent = userElement.parentElement;
     parent.replaceChild(wrapper, userElement);
+  }
+
+  setupHoverPopup(triggerContainer, toggle, contentElement, loadContent) {
+    let loaded = false;
+    let hideTimeout = null;
+    const hideDelayMs = 250;
+
+    const keepOpen = () => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+    };
+
+    const hideNow = () => {
+      keepOpen();
+      contentElement.style.display = 'none';
+      toggle.classList.remove('active');
+
+      if (this.activePopup?.contentElement === contentElement) {
+        this.activePopup = null;
+      }
+    };
+
+    const hideSoon = () => {
+      keepOpen();
+      hideTimeout = setTimeout(hideNow, hideDelayMs);
+    };
+
+    const show = async (event) => {
+      keepOpen();
+      const resultsPageAnchor = this.isUserResultsPage()
+        ? { x: event.clientX, y: event.clientY }
+        : null;
+
+      if (this.activePopup?.contentElement !== contentElement) {
+        this.activePopup?.hideNow();
+      }
+
+      this.preparePopupPlacement(triggerContainer, contentElement);
+      contentElement.style.display = 'block';
+      toggle.classList.add('active');
+      this.activePopup = { contentElement, hideNow };
+
+      if (resultsPageAnchor) {
+        this.positionResultsPagePopup(resultsPageAnchor, contentElement);
+      }
+
+      if (!loaded) {
+        loaded = true;
+        await loadContent();
+        if (contentElement.style.display !== 'none' && resultsPageAnchor) {
+          this.positionResultsPagePopup(resultsPageAnchor, contentElement);
+        }
+      }
+    };
+
+    triggerContainer.addEventListener('mouseenter', show);
+    triggerContainer.addEventListener('mouseleave', hideSoon);
+    contentElement.addEventListener('mouseenter', keepOpen);
+    contentElement.addEventListener('mouseleave', hideSoon);
+  }
+
+  preparePopupPlacement(triggerContainer, contentElement) {
+    if (this.isUserResultsPage()) {
+      if (contentElement.parentElement !== document.body) {
+        contentElement.classList.add('match-history-content--results-page');
+        document.body.appendChild(contentElement);
+      }
+      contentElement.style.maxHeight = '';
+      contentElement.style.overflowY = '';
+      return;
+    }
+
+    if (contentElement.parentElement !== triggerContainer) {
+      triggerContainer.appendChild(contentElement);
+    }
+    contentElement.classList.remove('match-history-content--results-page');
+    contentElement.style.left = '';
+    contentElement.style.top = '';
+    contentElement.style.maxHeight = '';
+    contentElement.style.overflowY = '';
+  }
+
+  positionResultsPagePopup(anchor, contentElement) {
+    const margin = 12;
+    const gap = 4;
+
+    const popupRect = contentElement.getBoundingClientRect();
+    let left = anchor.x - popupRect.width / 2;
+    const top = anchor.y + gap;
+
+    left = Math.max(margin, Math.min(left, window.innerWidth - popupRect.width - margin));
+
+    contentElement.style.left = `${left}px`;
+    contentElement.style.top = `${top}px`;
+  }
+
+  isUserResultsPage() {
+    return /^\/u\/[^/]+\/results(?:\/|$)/.test(window.location.pathname);
   }
 
   async loadMatchHistory(username, contentElement) {

@@ -61,6 +61,23 @@
   border: 1px solid #e0e0e0;
 }
 
+.match-history-content--results-page {
+  position: fixed;
+  top: auto;
+  left: auto;
+  transform: none;
+  min-width: 300px;
+  max-width: 400px;
+  z-index: 2147483647;
+  animation: resultsPageSlideIn 0.2s ease;
+}
+
+.match-history-content--results-page .match-history-list,
+.match-history-content--results-page .weapons-list {
+  max-height: none;
+  overflow-y: visible;
+}
+
 @media (prefers-color-scheme: dark) {
   .match-history-content {
     background: #1e1e1e;
@@ -82,6 +99,17 @@
 
   .match-date {
     color: #999 !important;
+  }
+}
+
+@keyframes resultsPageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
