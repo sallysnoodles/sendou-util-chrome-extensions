@@ -535,7 +535,15 @@ class MatchHistoryExtension {
   setupHoverPopup(triggerContainer, toggle, contentElement, loadContent) {
     let loaded = false;
     let hideTimeout = null;
+    let lastPointer = null;
     const hideDelayMs = 250;
+
+    const rememberPointer = (event) => {
+      lastPointer = {
+        x: event.clientX,
+        y: event.clientY
+      };
+    };
 
     const keepOpen = () => {
       if (hideTimeout) {
@@ -554,16 +562,25 @@ class MatchHistoryExtension {
       }
     };
 
-    const hideSoon = () => {
+    const hideSoon = (event) => {
+      if (event) {
+        rememberPointer(event);
+      }
       keepOpen();
-      hideTimeout = setTimeout(hideNow, hideDelayMs);
+      hideTimeout = setTimeout(() => {
+        if (this.pointIsInsideElement(triggerContainer, lastPointer) ||
+            this.pointIsInsideElement(contentElement, lastPointer)) {
+          return;
+        }
+
+        hideNow();
+      }, hideDelayMs);
     };
 
     const show = async (event) => {
+      rememberPointer(event);
       keepOpen();
-      const resultsPageAnchor = this.isUserResultsPage()
-        ? { x: event.clientX, y: event.clientY }
-        : null;
+      const resultsPagePopup = this.isUserResultsPage();
 
       if (this.activePopup?.contentElement !== contentElement) {
         this.activePopup?.hideNow();
@@ -574,23 +591,40 @@ class MatchHistoryExtension {
       toggle.classList.add('active');
       this.activePopup = { contentElement, hideNow };
 
-      if (resultsPageAnchor) {
-        this.positionResultsPagePopup(resultsPageAnchor, contentElement);
+      if (resultsPagePopup) {
+        this.positionResultsPagePopup(triggerContainer, contentElement);
       }
 
       if (!loaded) {
         loaded = true;
         await loadContent();
-        if (contentElement.style.display !== 'none' && resultsPageAnchor) {
-          this.positionResultsPagePopup(resultsPageAnchor, contentElement);
+        if (contentElement.style.display !== 'none' && resultsPagePopup) {
+          this.positionResultsPagePopup(triggerContainer, contentElement);
         }
       }
     };
 
     triggerContainer.addEventListener('mouseenter', show);
+    triggerContainer.addEventListener('mousemove', rememberPointer);
     triggerContainer.addEventListener('mouseleave', hideSoon);
-    contentElement.addEventListener('mouseenter', keepOpen);
+    contentElement.addEventListener('mouseenter', (event) => {
+      rememberPointer(event);
+      keepOpen();
+    });
+    contentElement.addEventListener('mousemove', rememberPointer);
     contentElement.addEventListener('mouseleave', hideSoon);
+  }
+
+  pointIsInsideElement(element, point) {
+    if (!element || !point || element.style.display === 'none') {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return point.x >= rect.left &&
+           point.x <= rect.right &&
+           point.y >= rect.top &&
+           point.y <= rect.bottom;
   }
 
   preparePopupPlacement(triggerContainer, contentElement) {
@@ -614,13 +648,14 @@ class MatchHistoryExtension {
     contentElement.style.overflowY = '';
   }
 
-  positionResultsPagePopup(anchor, contentElement) {
+  positionResultsPagePopup(triggerContainer, contentElement) {
     const margin = 12;
-    const gap = 4;
+    const gap = 6;
+    const triggerRect = triggerContainer.getBoundingClientRect();
 
     const popupRect = contentElement.getBoundingClientRect();
-    let left = anchor.x - popupRect.width / 2;
-    const top = anchor.y + gap;
+    let left = triggerRect.left + triggerRect.width / 2 - popupRect.width / 2;
+    const top = triggerRect.bottom + gap;
 
     left = Math.max(margin, Math.min(left, window.innerWidth - popupRect.width - margin));
 

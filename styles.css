@@ -3,7 +3,7 @@
 .match-history-wrapper {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 0;
 }
 
 .match-history-container {
@@ -21,8 +21,8 @@
   background: transparent;
   border: none;
   border-radius: 50%;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 28px;
   cursor: pointer;
   font-size: 10px;
   display: inline-flex;
