@@ -1,12 +1,12 @@
 // Popup script for Match History Extension
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Load current username if set
-  const result = await chrome.storage.local.get(['manualUsername', 'showTournaments', 'showWeapons']);
+  // Load current username and feature settings
+  const result = await chrome.storage.local.get(['manualUsername', 'detectedUsername', 'showTournaments', 'showWeapons']);
+  updateCurrentUserDisplay(result.manualUsername, result.detectedUsername);
+
   if (result.manualUsername) {
     document.getElementById('usernameInput').value = result.manualUsername;
-    document.getElementById('currentUser').textContent = `Current: ${result.manualUsername}`;
-    document.getElementById('currentUser').style.display = 'block';
   }
 
   // Load feature toggles (default to true if not set)
@@ -24,16 +24,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await chrome.storage.local.set({ manualUsername: username });
 
-    document.getElementById('currentUser').textContent = `Current: ${username}`;
-    document.getElementById('currentUser').style.display = 'block';
+    updateCurrentUserDisplay(username, result.detectedUsername);
     showMessage('✓ Username saved! Reload sendou.ink to apply.', true);
 
-    // Reload the content script on sendou.ink tabs
-    chrome.tabs.query({ url: 'https://sendou.ink/*' }, (tabs) => {
-      tabs.forEach(tab => {
-        chrome.tabs.reload(tab.id);
-      });
-    });
+    reloadSendouTabs();
+  });
+
+  // Clear manual username button
+  document.getElementById('clearUsername').addEventListener('click', async () => {
+    const latest = await chrome.storage.local.get(['detectedUsername']);
+
+    await chrome.storage.local.remove(['manualUsername']);
+    document.getElementById('usernameInput').value = '';
+    updateCurrentUserDisplay(null, latest.detectedUsername);
+    showMessage('✓ Manual username cleared! Auto-detection will be used.', true);
+
+    reloadSendouTabs();
   });
 
   // Feature toggles
@@ -41,24 +47,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     await chrome.storage.local.set({ showTournaments: e.target.checked });
     showMessage('✓ Settings saved! Reload sendou.ink to apply.', true);
 
-    // Reload the content script on sendou.ink tabs
-    chrome.tabs.query({ url: 'https://sendou.ink/*' }, (tabs) => {
-      tabs.forEach(tab => {
-        chrome.tabs.reload(tab.id);
-      });
-    });
+    reloadSendouTabs();
   });
 
   document.getElementById('showWeapons').addEventListener('change', async (e) => {
     await chrome.storage.local.set({ showWeapons: e.target.checked });
     showMessage('✓ Settings saved! Reload sendou.ink to apply.', true);
 
-    // Reload the content script on sendou.ink tabs
-    chrome.tabs.query({ url: 'https://sendou.ink/*' }, (tabs) => {
-      tabs.forEach(tab => {
-        chrome.tabs.reload(tab.id);
-      });
-    });
+    reloadSendouTabs();
   });
 
   // Check if current tab is on sendou.ink
@@ -75,6 +71,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 });
+
+function reloadSendouTabs() {
+  chrome.tabs.query({ url: 'https://sendou.ink/*' }, (tabs) => {
+    tabs.forEach(tab => {
+      chrome.tabs.reload(tab.id);
+    });
+  });
+}
+
+function updateCurrentUserDisplay(manualUsername, detectedUsername) {
+  const currentUserElement = document.getElementById('currentUser');
+  const activeUsername = manualUsername || detectedUsername;
+
+  if (!activeUsername) {
+    currentUserElement.textContent = 'Current: Not detected';
+    currentUserElement.style.display = 'block';
+    currentUserElement.style.opacity = '0.75';
+    return;
+  }
+
+  const source = manualUsername ? 'Manual' : 'Auto-detected';
+  currentUserElement.textContent = `${source}: ${activeUsername}`;
+  currentUserElement.style.display = 'block';
+  currentUserElement.style.opacity = '1';
+}
 
 function showMessage(text, isSuccess) {
   const messageElement = document.getElementById('saveMessage');

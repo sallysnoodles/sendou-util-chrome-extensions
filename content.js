@@ -108,32 +108,55 @@ class MatchHistoryExtension {
     return normalized;
   }
 
-  setLoggedInUser(username, source) {
+  setLoggedInUser(username, source, options = {}) {
     const normalized = this.normalizeUsername(username);
     if (!normalized) return false;
 
     this.loggedInUser = normalized;
     this.log(`✓ Found logged-in user via ${source}:`, this.loggedInUser);
+
+    if (options.persist) {
+      this.saveDetectedUsername(normalized);
+    }
+
     return true;
+  }
+
+  async saveDetectedUsername(username) {
+    try {
+      await chrome.storage.local.set({ detectedUsername: username });
+    } catch (e) {
+      this.log('Could not save detected username:', e.message);
+    }
+  }
+
+  async clearDetectedUsername() {
+    try {
+      await chrome.storage.local.remove(['detectedUsername']);
+    } catch (e) {
+      this.log('Could not clear detected username:', e.message);
+    }
   }
 
   async getLoggedInUser() {
     this.log('Detecting logged-in user...');
 
     // Method 1: Check if manually set via extension storage (highest priority)
+    let detectedUsername = null;
     try {
-      const result = await chrome.storage.local.get(['manualUsername']);
+      const result = await chrome.storage.local.get(['manualUsername', 'detectedUsername']);
       if (result.manualUsername) {
         if (this.setLoggedInUser(result.manualUsername, 'manual setting')) {
           return;
         }
       }
+      detectedUsername = result.detectedUsername || null;
     } catch (e) {
       // Chrome storage not available, skip
     }
 
-    // Method 2: Parse React Router context stream data embedded in <script> tags
-    // The logged-in user is in the turbo-stream as: ..."user",{...},"username","...",...,"customUrl","..."
+    // Method 2: Parse React Router root loader data embedded in <script> tags
+    // The root loader user is the logged-in viewer. Route-level users are profile owners.
     if (this.detectLoggedInUserFromReactRouterContext()) {
       return;
     }
@@ -143,7 +166,18 @@ class MatchHistoryExtension {
       return;
     }
 
-    // Method 4: Look for a current-user profile link in the site chrome
+    if (this.pageShowsLoggedOutState()) {
+      await this.clearDetectedUsername();
+      this.log('Page appears logged out; cleared stored detected username');
+      return;
+    }
+
+    // Method 4: Reuse last trusted auto-detection across sendou.ink pages
+    if (detectedUsername && this.setLoggedInUser(detectedUsername, 'stored auto-detection')) {
+      return;
+    }
+
+    // Method 5: Look for a current-user profile link in the site header
     if (this.detectLoggedInUserFromHeader()) {
       return;
     }
@@ -162,8 +196,8 @@ class MatchHistoryExtension {
       for (const enqueuedString of enqueueStrings) {
         try {
           const data = JSON.parse(enqueuedString);
-          const username = this.findUserInReactRouterData(data);
-          if (username && this.setLoggedInUser(username, 'React Router context')) {
+          const username = this.findLoggedInUserInReactRouterData(data);
+          if (username && this.setLoggedInUser(username, 'React Router root loader', { persist: true })) {
             return true;
           }
         } catch (e) {
@@ -173,6 +207,21 @@ class MatchHistoryExtension {
     }
 
     return false;
+  }
+
+  findLoggedInUserInReactRouterData(data) {
+    if (!Array.isArray(data)) return null;
+
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] !== 'loaderData' || !data[i + 1] || typeof data[i + 1] !== 'object') continue;
+
+      const rootLoaderData = this.getReactRouterObjectFieldValue(data[i + 1], data, 'root');
+      const loggedInUser = this.getReactRouterObjectFieldValue(rootLoaderData, data, 'user');
+      const username = this.extractUsernameFromReactRouterValue(loggedInUser, data);
+      if (username) return username;
+    }
+
+    return null;
   }
 
   extractEnqueuedStrings(text) {
@@ -191,6 +240,7 @@ class MatchHistoryExtension {
     return enqueueStrings;
   }
 
+  // Kept for compatibility with older debug snippets and tests.
   findUserInReactRouterData(data) {
     if (!Array.isArray(data)) return null;
 
@@ -213,14 +263,19 @@ class MatchHistoryExtension {
   extractUsernameFromReactRouterValue(value, data) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
 
-    const customUrl = this.getReactRouterObjectField(value, data, 'customUrl');
+    const customUrl = this.getReactRouterObjectFieldValue(value, data, 'customUrl');
     if (customUrl) return customUrl;
 
-    return this.getReactRouterObjectField(value, data, 'username');
+    return this.getReactRouterObjectFieldValue(value, data, 'username');
   }
 
-  getReactRouterObjectField(obj, data, fieldName) {
+  getReactRouterObjectFieldValue(obj, data, fieldName) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+
     if (typeof obj[fieldName] === 'string') {
+      return obj[fieldName];
+    }
+    if (Object.prototype.hasOwnProperty.call(obj, fieldName)) {
       return obj[fieldName];
     }
 
@@ -230,9 +285,7 @@ class MatchHistoryExtension {
 
       const keyIdx = k.startsWith('_') ? parseInt(k.slice(1), 10) : NaN;
       if (!Number.isNaN(keyIdx) && keyIdx >= 0 && keyIdx < data.length && data[keyIdx] === fieldName) {
-        if (typeof data[valIdx] === 'string') {
-          return data[valIdx];
-        }
+        return data[valIdx];
       }
     }
 
@@ -250,7 +303,7 @@ class MatchHistoryExtension {
         try {
           const parsed = JSON.parse(value);
           const username = this.findUsernameInObject(parsed);
-          if (username && this.setLoggedInUser(username, 'localStorage')) {
+          if (username && this.setLoggedInUser(username, 'localStorage', { persist: true })) {
             return true;
           }
         } catch (e) {
@@ -281,21 +334,28 @@ class MatchHistoryExtension {
   detectLoggedInUserFromHeader() {
     const selectors = [
       'header a[href*="/u/"]',
-      'nav a[href*="/u/"]',
-      '[class*="header" i] a[href*="/u/"]',
-      '[class*="nav" i] a[href*="/u/"]'
+      '[class*="header" i] a[href*="/u/"]'
     ];
 
     for (const selector of selectors) {
       for (const link of document.querySelectorAll(selector)) {
         const username = this.extractUsernameFromHref(link.getAttribute('href'));
-        if (username && this.setLoggedInUser(username, 'header link')) {
+        if (username && this.setLoggedInUser(username, 'header link', { persist: true })) {
           return true;
         }
       }
     }
 
     return false;
+  }
+
+  pageShowsLoggedOutState() {
+    const headerText = document.querySelector('header')?.textContent || '';
+    const hasLoginButton = Array.from(document.querySelectorAll('header button, header a')).some((element) => {
+      return element.textContent?.trim().toLowerCase() === 'login';
+    });
+
+    return hasLoginButton || /\bLogin\b/.test(headerText);
   }
 
   extractUsernameFromHref(href) {
