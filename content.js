@@ -582,44 +582,13 @@ class MatchHistoryExtension {
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
 
-      // Find weapon elements in the parsed HTML
-      const weaponElements = doc.querySelectorAll('img[src*="/static-assets/img/main-weapons-outlined"]');
-      this.log(`Found ${weaponElements.length} weapon elements`);
-
-      if (weaponElements.length === 0) {
-        contentElement.innerHTML = `
-          <div class="match-history-empty">
-            No weapons listed on ${username}'s profile
-          </div>
-        `;
-        return;
-      }
-
-      // Extract weapon data
-      const weapons = [];
-      for (const img of weaponElements) {
-        const weaponName = img.getAttribute('alt') || img.getAttribute('title') || 'Unknown Weapon';
-        let weaponImage = img.getAttribute('src') || '';
-
-        // Convert relative URLs to absolute URLs
-        if (weaponImage && !weaponImage.startsWith('http')) {
-          weaponImage = 'https://sendou.ink' + weaponImage;
-        }
-
-        this.log(`Extracted weapon: ${weaponName}, image: ${weaponImage}`);
-
-        weapons.push({
-          name: weaponName,
-          image: weaponImage
-        });
-      }
-
+      const weapons = this.extractWeaponsFromProfile(doc);
       this.log(`Total weapons extracted: ${weapons.length}`);
 
       if (weapons.length === 0) {
         contentElement.innerHTML = `
           <div class="match-history-empty">
-            No weapons data found
+            No weapons listed on ${username}'s profile
           </div>
         `;
         return;
@@ -636,6 +605,43 @@ class MatchHistoryExtension {
         </div>
       `;
     }
+  }
+
+  extractWeaponsFromProfile(doc) {
+    // sendou.ink has moved these assets between static-assets and CDN-backed paths.
+    const weaponElements = doc.querySelectorAll([
+      'img[src*="main-weapons-outlined"]',
+      'img[data-testid][src*="/img/main-weapons"]'
+    ].join(', '));
+    this.log(`Found ${weaponElements.length} weapon elements`);
+
+    const seen = new Set();
+    const weapons = [];
+    for (const img of weaponElements) {
+      const wrapperTitle = img.closest('[title]')?.getAttribute('title');
+      const weaponName = img.getAttribute('alt') || img.getAttribute('title') || wrapperTitle || 'Unknown Weapon';
+      let weaponImage = img.getAttribute('src') || '';
+
+      // Convert relative URLs to absolute URLs
+      if (weaponImage.startsWith('//')) {
+        weaponImage = window.location.protocol + weaponImage;
+      } else if (weaponImage && !weaponImage.startsWith('http')) {
+        weaponImage = 'https://sendou.ink' + weaponImage;
+      }
+
+      const dedupeKey = `${weaponName}|${weaponImage}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      this.log(`Extracted weapon: ${weaponName}, image: ${weaponImage}`);
+
+      weapons.push({
+        name: weaponName,
+        image: weaponImage
+      });
+    }
+
+    return weapons;
   }
 
   renderWeapons(weapons, username, contentElement) {
