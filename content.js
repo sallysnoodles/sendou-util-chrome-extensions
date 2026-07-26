@@ -8,6 +8,11 @@ class MatchHistoryExtension {
     this.showWeapons = true; // Default to true
     this.lutiData = null; // LUTI division lookup: username/customUrl -> {division, teamName, teamId}
     this.activePopup = null;
+    this.processedUserCardTriggers = new WeakSet();
+    this.userIdentifierCache = new Map();
+    this.userIdentifierCacheInitialized = false;
+    this.userIdentifierRouteKey = null;
+    this.userIdentifierRoutePromise = null;
     this.init();
   }
 
@@ -225,6 +230,124 @@ class MatchHistoryExtension {
     return null;
   }
 
+  cacheUserIdentifiersFromReactRouterContext() {
+    if (this.userIdentifierCacheInitialized) return;
+    this.userIdentifierCacheInitialized = true;
+
+    const scripts = document.querySelectorAll('script');
+    for (const script of scripts) {
+      const text = script.textContent;
+      if (!text || !text.includes('streamController.enqueue')) continue;
+
+      for (const enqueuedString of this.extractEnqueuedStrings(text)) {
+        try {
+          this.cacheUserIdentifiersFromReactRouterData(JSON.parse(enqueuedString));
+        } catch (e) {
+          this.log('Failed to parse user identifiers from React Router context:', e.message);
+        }
+      }
+    }
+  }
+
+  cacheUserIdentifiersFromReactRouterData(data) {
+    if (!Array.isArray(data)) return;
+
+    for (const item of data) {
+      if (typeof item === 'string') {
+        const serialized = item.trim();
+        if ((serialized.startsWith('{') || serialized.startsWith('[')) &&
+            serialized.includes('"username"')) {
+          try {
+            this.cacheUserIdentifiersFromPlainValue(JSON.parse(serialized));
+          } catch (e) {
+            this.log('Failed to parse nested user data:', e.message);
+          }
+        }
+        continue;
+      }
+
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+      const username = this.getReactRouterObjectFieldValue(item, data, 'username');
+      if (typeof username !== 'string') continue;
+
+      const customUrl = this.getReactRouterObjectFieldValue(item, data, 'customUrl');
+      const discordId = this.getReactRouterObjectFieldValue(item, data, 'discordId');
+      const identifier = this.normalizeUsername(customUrl) ||
+                         this.normalizeUsername(discordId) ||
+                         this.normalizeUsername(username);
+      if (identifier) {
+        this.userIdentifierCache.set(username.toLowerCase(), identifier);
+      }
+    }
+  }
+
+  cacheUserIdentifiersFromPlainValue(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 10) return;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        this.cacheUserIdentifiersFromPlainValue(item, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof value.username === 'string') {
+      const identifier = this.normalizeUsername(value.customUrl) ||
+                         this.normalizeUsername(value.discordId) ||
+                         this.normalizeUsername(value.username);
+      if (identifier) {
+        this.userIdentifierCache.set(value.username.toLowerCase(), identifier);
+      }
+    }
+
+    for (const child of Object.values(value)) {
+      this.cacheUserIdentifiersFromPlainValue(child, depth + 1);
+    }
+  }
+
+  getUserIdentifier(displayUsername) {
+    const normalized = this.normalizeUsername(displayUsername);
+    if (!normalized) return null;
+
+    return this.userIdentifierCache.get(normalized.toLowerCase()) || normalized.toLowerCase();
+  }
+
+  async cacheUserIdentifiersFromCurrentRoute() {
+    const routeKey = `${window.location.pathname}${window.location.search}`;
+    if (this.userIdentifierRouteKey === routeKey) return;
+
+    if (this.userIdentifierRoutePromise?.routeKey === routeKey) {
+      await this.userIdentifierRoutePromise.promise;
+      return;
+    }
+
+    const dataPath = window.location.pathname.endsWith('/')
+      ? `${window.location.pathname.slice(0, -1)}.data`
+      : `${window.location.pathname}.data`;
+    const dataUrl = `${dataPath || '/.data'}${window.location.search}`;
+
+    const promise = (async () => {
+      try {
+        const response = await fetch(dataUrl);
+        if (!response.ok) {
+          throw new Error(`Route data request failed (${response.status})`);
+        }
+        this.cacheUserIdentifiersFromReactRouterData(await response.json());
+      } catch (e) {
+        this.log('Could not load user identifiers from current route:', e.message);
+      } finally {
+        this.userIdentifierRouteKey = routeKey;
+      }
+    })();
+
+    this.userIdentifierRoutePromise = { routeKey, promise };
+    await promise;
+    if (this.userIdentifierRoutePromise?.promise === promise) {
+      this.userIdentifierRoutePromise = null;
+    }
+  }
+
   extractEnqueuedStrings(text) {
     const enqueueStrings = [];
     const enqueueCallRegex = /streamController\.enqueue\(\s*(["'])((?:\\.|(?!\1)[\s\S])*)\1\s*\)/g;
@@ -437,6 +560,80 @@ class MatchHistoryExtension {
         this.addMatchHistoryBlock(link, username);
       }
     });
+
+    this.processUserCardTriggers();
+  }
+
+  async processUserCardTriggers() {
+    const userCardTriggers = document.querySelectorAll(
+      'button[data-rac][data-react-aria-pressable][aria-expanded]'
+    );
+    const candidates = [];
+
+    userCardTriggers.forEach(trigger => {
+      if (this.processedUserCardTriggers.has(trigger) ||
+          trigger.closest('.match-history-wrapper') ||
+          this.isInHeaderFooterOrNav(trigger)) {
+        return;
+      }
+
+      const displayUsername = this.extractUsernameFromUserCardTrigger(trigger);
+      if (displayUsername) {
+        candidates.push({ trigger, displayUsername });
+      }
+    });
+
+    if (candidates.length === 0) return;
+
+    this.cacheUserIdentifiersFromReactRouterContext();
+    if (candidates.some(({ displayUsername }) =>
+      !this.userIdentifierCache.has(displayUsername.toLowerCase()))) {
+      await this.cacheUserIdentifiersFromCurrentRoute();
+    }
+
+    for (const { trigger, displayUsername } of candidates) {
+      if (this.processedUserCardTriggers.has(trigger) || !trigger.isConnected) {
+        continue;
+      }
+
+      const username = this.getUserIdentifier(displayUsername);
+      if (!username ||
+          (this.loggedInUser &&
+           (displayUsername.toLowerCase() === this.loggedInUser.toLowerCase() ||
+            username.toLowerCase() === this.loggedInUser.toLowerCase()))) {
+        continue;
+      }
+
+      this.addUserCardControls(trigger, username);
+      this.processedUserCardTriggers.add(trigger);
+    }
+  }
+
+  extractUsernameFromUserCardTrigger(trigger) {
+    // Sendou user-card triggers include an avatar and visible username, while other
+    // dialog triggers generally have only an icon, label, or tournament image.
+    if (!trigger.querySelector('img')) return null;
+
+    const textElements = trigger.querySelectorAll('span, strong, b');
+    for (const element of textElements) {
+      const directText = Array.from(element.childNodes)
+        .filter(node => node.nodeType === Node.TEXT_NODE)
+        .map(node => node.textContent.trim())
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+
+      if (!directText ||
+          directText.length > 50 ||
+          /^(ign|fc|xp|tier)\s*:?\s*$/i.test(directText)) {
+        continue;
+      }
+
+      const username = this.normalizeUsername(directText);
+      if (username) return username;
+    }
+
+    return null;
   }
 
   isInHeaderFooterOrNav(element) {
@@ -468,13 +665,49 @@ class MatchHistoryExtension {
     wrapper.className = 'match-history-wrapper';
 
     wrapper.appendChild(userElement.cloneNode(true));
+    wrapper.appendChild(this.createFeatureControls(username));
+
+    // Wrap the user link and icons together to keep them inline
+    const parent = userElement.parentElement;
+    parent.replaceChild(wrapper, userElement);
+  }
+
+  addUserCardControls(trigger, username) {
+    if (!this.showTournaments && !this.showWeapons) {
+      return;
+    }
+
+    const controls = document.createElement('span');
+    controls.className = 'match-history-user-card-controls';
+    controls.appendChild(this.createFeatureControls(username, {
+      fixedPopup: true,
+      useButtonToggle: false
+    }));
+
+    const stopNativeUserCard = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    controls.addEventListener('pointerdown', stopNativeUserCard);
+    controls.addEventListener('pointerup', stopNativeUserCard);
+    controls.addEventListener('click', stopNativeUserCard);
+
+    trigger.appendChild(controls);
+  }
+
+  createFeatureControls(username, options = {}) {
+    const {
+      fixedPopup = false,
+      useButtonToggle = true
+    } = options;
+    const fragment = document.createDocumentFragment();
 
     // Create the shared tournaments expandable block (if enabled)
     if (this.showTournaments) {
       const tournamentsContainer = document.createElement('span');
       tournamentsContainer.className = 'match-history-container';
 
-      const tournamentsToggle = document.createElement('button');
+      const tournamentsToggle = document.createElement(useButtonToggle ? 'button' : 'span');
       tournamentsToggle.className = 'match-history-toggle';
       tournamentsToggle.textContent = '📊';
       tournamentsToggle.title = 'View shared tournaments';
@@ -489,13 +722,15 @@ class MatchHistoryExtension {
       tournamentsContent.appendChild(tournamentsLoadingText);
 
       tournamentsContainer.appendChild(tournamentsToggle);
-      tournamentsContainer.appendChild(tournamentsContent);
+      if (!fixedPopup) {
+        tournamentsContainer.appendChild(tournamentsContent);
+      }
 
-      wrapper.appendChild(tournamentsContainer);
+      fragment.appendChild(tournamentsContainer);
 
       this.setupHoverPopup(tournamentsContainer, tournamentsToggle, tournamentsContent, async () => {
         await this.loadMatchHistory(username, tournamentsContent);
-      });
+      }, { fixedPopup });
     }
 
     // Create the weapons expandable block (if enabled)
@@ -503,7 +738,7 @@ class MatchHistoryExtension {
       const weaponsContainer = document.createElement('span');
       weaponsContainer.className = 'match-history-container weapons-container';
 
-      const weaponsToggle = document.createElement('button');
+      const weaponsToggle = document.createElement(useButtonToggle ? 'button' : 'span');
       weaponsToggle.className = 'match-history-toggle weapons-toggle';
       weaponsToggle.textContent = '🔫';
       weaponsToggle.title = 'View weapons';
@@ -518,25 +753,26 @@ class MatchHistoryExtension {
       weaponsContent.appendChild(weaponsLoadingText);
 
       weaponsContainer.appendChild(weaponsToggle);
-      weaponsContainer.appendChild(weaponsContent);
+      if (!fixedPopup) {
+        weaponsContainer.appendChild(weaponsContent);
+      }
 
-      wrapper.appendChild(weaponsContainer);
+      fragment.appendChild(weaponsContainer);
 
       this.setupHoverPopup(weaponsContainer, weaponsToggle, weaponsContent, async () => {
         await this.loadWeapons(username, weaponsContent);
-      });
+      }, { fixedPopup });
     }
 
-    // Wrap the user link and icons together to keep them inline
-    const parent = userElement.parentElement;
-    parent.replaceChild(wrapper, userElement);
+    return fragment;
   }
 
-  setupHoverPopup(triggerContainer, toggle, contentElement, loadContent) {
+  setupHoverPopup(triggerContainer, toggle, contentElement, loadContent, options = {}) {
     let loaded = false;
     let hideTimeout = null;
     let lastPointer = null;
     const hideDelayMs = 250;
+    const fixedPopup = options.fixedPopup || this.isUserResultsPage();
 
     const rememberPointer = (event) => {
       lastPointer = {
@@ -580,26 +816,25 @@ class MatchHistoryExtension {
     const show = async (event) => {
       rememberPointer(event);
       keepOpen();
-      const resultsPagePopup = this.isUserResultsPage();
 
       if (this.activePopup?.contentElement !== contentElement) {
         this.activePopup?.hideNow();
       }
 
-      this.preparePopupPlacement(triggerContainer, contentElement);
+      this.preparePopupPlacement(triggerContainer, contentElement, fixedPopup);
       contentElement.style.display = 'block';
       toggle.classList.add('active');
       this.activePopup = { contentElement, hideNow };
 
-      if (resultsPagePopup) {
-        this.positionResultsPagePopup(triggerContainer, contentElement);
+      if (fixedPopup) {
+        this.positionFixedPopup(triggerContainer, contentElement);
       }
 
       if (!loaded) {
         loaded = true;
         await loadContent();
-        if (contentElement.style.display !== 'none' && resultsPagePopup) {
-          this.positionResultsPagePopup(triggerContainer, contentElement);
+        if (contentElement.style.display !== 'none' && fixedPopup) {
+          this.positionFixedPopup(triggerContainer, contentElement);
         }
       }
     };
@@ -627,10 +862,10 @@ class MatchHistoryExtension {
            point.y <= rect.bottom;
   }
 
-  preparePopupPlacement(triggerContainer, contentElement) {
-    if (this.isUserResultsPage()) {
+  preparePopupPlacement(triggerContainer, contentElement, fixedPopup) {
+    if (fixedPopup) {
       if (contentElement.parentElement !== document.body) {
-        contentElement.classList.add('match-history-content--results-page');
+        contentElement.classList.add('match-history-content--fixed');
         document.body.appendChild(contentElement);
       }
       contentElement.style.maxHeight = '';
@@ -641,14 +876,14 @@ class MatchHistoryExtension {
     if (contentElement.parentElement !== triggerContainer) {
       triggerContainer.appendChild(contentElement);
     }
-    contentElement.classList.remove('match-history-content--results-page');
+    contentElement.classList.remove('match-history-content--fixed');
     contentElement.style.left = '';
     contentElement.style.top = '';
     contentElement.style.maxHeight = '';
     contentElement.style.overflowY = '';
   }
 
-  positionResultsPagePopup(triggerContainer, contentElement) {
+  positionFixedPopup(triggerContainer, contentElement) {
     const margin = 12;
     const gap = 6;
     const triggerRect = triggerContainer.getBoundingClientRect();

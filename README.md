@@ -1,6 +1,6 @@
 # Sendou Utils
 
-Chrome extension for [sendou.ink](https://sendou.ink/) that adds hover popups next to user links.
+Chrome extension for [sendou.ink](https://sendou.ink/) that adds hover popups next to user links and native user-card triggers.
 
 ## Features
 

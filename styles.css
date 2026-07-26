@@ -6,6 +6,12 @@
   gap: 0;
 }
 
+.match-history-user-card-controls {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 2px;
+}
+
 .match-history-container {
   display: inline-flex;
   position: relative;
@@ -61,7 +67,7 @@
   border: 1px solid #e0e0e0;
 }
 
-.match-history-content--results-page {
+.match-history-content--fixed {
   position: fixed;
   top: auto;
   left: auto;
@@ -72,8 +78,8 @@
   animation: resultsPageSlideIn 0.2s ease;
 }
 
-.match-history-content--results-page .match-history-list,
-.match-history-content--results-page .weapons-list {
+.match-history-content--fixed .match-history-list,
+.match-history-content--fixed .weapons-list {
   max-height: none;
   overflow-y: visible;
 }
