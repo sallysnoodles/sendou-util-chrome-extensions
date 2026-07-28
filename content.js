@@ -6,6 +6,13 @@ class MatchHistoryExtension {
     this.loggedInUser = null;
     this.showTournaments = true; // Default to true
     this.showWeapons = true; // Default to true
+    this.tournamentLookbackMonths = 6;
+    this.tournamentResultsCacheTtlMs = 12 * 60 * 60 * 1000;
+    this.tournamentResultsCacheStorageKey = 'tournamentResultsCacheV2';
+    this.encounterMonths = 6;
+    this.maxEncounters = 5;
+    this.maxSendouQSeasons = 2;
+    this.maxSeasonPages = 8;
     this.lutiData = null; // LUTI division lookup: username/customUrl -> {division, teamName, teamId}
     this.activePopup = null;
     this.processedUserCardTriggers = new WeakSet();
@@ -13,6 +20,12 @@ class MatchHistoryExtension {
     this.userIdentifierCacheInitialized = false;
     this.userIdentifierRouteKey = null;
     this.userIdentifierRoutePromise = null;
+    this.userIdentityCache = new Map();
+    this.seasonHistoryCache = new Map();
+    this.recentSeasonHistoryCache = new Map();
+    this.tournamentBracketCache = new Map();
+    this.tournamentResultsMemoryCache = new Map();
+    this.tournamentResultsCacheWriteQueue = Promise.resolve();
     this.init();
   }
 
@@ -112,6 +125,124 @@ class MatchHistoryExtension {
     if (ignoredRoutes.has(normalized.toLowerCase())) return null;
 
     return normalized;
+  }
+
+  decodeRemixData(data) {
+    if (!Array.isArray(data)) {
+      throw new Error('Expected a Remix flat data array');
+    }
+
+    const cache = new Map();
+    const specialValues = new Map([
+      [-1, undefined],
+      [-2, NaN],
+      [-3, -Infinity],
+      [-4, -0],
+      [-5, null],
+      [-6, Infinity],
+      [-7, undefined]
+    ]);
+
+    const resolveReference = (reference) =>
+      reference < 0 ? specialValues.get(reference) : decodeAt(reference);
+
+    const decodeAt = (index) => {
+      if (cache.has(index)) return cache.get(index);
+
+      const value = data[index];
+      if (Array.isArray(value)) {
+        const decoded = [];
+        cache.set(index, decoded);
+        value.forEach((item) => {
+          decoded.push(typeof item === 'number' ? resolveReference(item) : item);
+        });
+        return decoded;
+      }
+
+      if (value && typeof value === 'object') {
+        const decoded = {};
+        cache.set(index, decoded);
+        Object.entries(value).forEach(([key, item]) => {
+          const keyReference = key.match(/^_(\d+)$/);
+          const decodedKey = keyReference ? data[Number(keyReference[1])] : key;
+          decoded[decodedKey] =
+            typeof item === 'number' ? resolveReference(item) : item;
+        });
+        return decoded;
+      }
+
+      cache.set(index, value);
+      return value;
+    };
+
+    return data.map((_, index) => decodeAt(index));
+  }
+
+  findDecodedRouteData(data, routeId) {
+    const decoded = this.decodeRemixData(data);
+    for (let index = 0; index < data.length - 1; index++) {
+      if (data[index] === routeId) {
+        return decoded[index + 1]?.data ?? decoded[index + 1] ?? null;
+      }
+    }
+    return null;
+  }
+
+  cacheUserIdentity(user) {
+    if (!user || typeof user !== 'object') return null;
+
+    const id = Number(user.id);
+    if (!Number.isFinite(id)) return null;
+
+    const identity = {
+      id,
+      username: user.username || null,
+      customUrl: user.customUrl || null,
+      discordId: user.discordId ? String(user.discordId) : null
+    };
+    [
+      identity.username,
+      identity.customUrl,
+      identity.discordId,
+      user.inGameName
+    ].forEach((value) => {
+      const normalized = this.normalizeUsername(value);
+      if (normalized) this.userIdentityCache.set(normalized.toLowerCase(), identity);
+    });
+    this.userIdentityCache.set(String(id), identity);
+    return identity;
+  }
+
+  async fetchUserIdentity(identifier) {
+    const normalized = this.normalizeUsername(identifier);
+    const cached = normalized
+      ? this.userIdentityCache.get(normalized.toLowerCase())
+      : null;
+    if (cached) return cached;
+
+    const response = await fetch(
+      `https://sendou.ink/u/${encodeURIComponent(identifier)}.data`
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch user identity (${response.status} ${response.statusText})`
+      );
+    }
+
+    const data = await response.json();
+    const routeData = this.findDecodedRouteData(
+      data,
+      'features/user-page/routes/u.$identifier'
+    );
+    const identity = this.cacheUserIdentity(routeData?.user);
+    if (!identity) {
+      throw new Error(`Could not resolve user identity for ${identifier}`);
+    }
+    return identity;
+  }
+
+  getIdentityRoute(identity) {
+    return identity.customUrl || identity.discordId || identity.username;
   }
 
   setLoggedInUser(username, source, options = {}) {
@@ -710,7 +841,7 @@ class MatchHistoryExtension {
       const tournamentsToggle = document.createElement(useButtonToggle ? 'button' : 'span');
       tournamentsToggle.className = 'match-history-toggle';
       tournamentsToggle.textContent = '📊';
-      tournamentsToggle.title = 'View shared tournaments';
+      tournamentsToggle.title = 'View tournament and opponent history';
 
       const tournamentsContent = document.createElement('div');
       tournamentsContent.className = 'match-history-content';
@@ -718,7 +849,7 @@ class MatchHistoryExtension {
 
       const tournamentsLoadingText = document.createElement('div');
       tournamentsLoadingText.className = 'match-history-loading';
-      tournamentsLoadingText.textContent = 'Loading shared tournaments...';
+      tournamentsLoadingText.textContent = 'Loading match history...';
       tournamentsContent.appendChild(tournamentsLoadingText);
 
       tournamentsContainer.appendChild(tournamentsToggle);
@@ -826,15 +957,13 @@ class MatchHistoryExtension {
       toggle.classList.add('active');
       this.activePopup = { contentElement, hideNow };
 
-      if (fixedPopup) {
-        this.positionFixedPopup(triggerContainer, contentElement);
-      }
+      this.positionPopup(triggerContainer, contentElement, fixedPopup);
 
       if (!loaded) {
         loaded = true;
         await loadContent();
-        if (contentElement.style.display !== 'none' && fixedPopup) {
-          this.positionFixedPopup(triggerContainer, contentElement);
+        if (contentElement.style.display !== 'none') {
+          this.positionPopup(triggerContainer, contentElement, fixedPopup);
         }
       }
     };
@@ -848,6 +977,34 @@ class MatchHistoryExtension {
     });
     contentElement.addEventListener('mousemove', rememberPointer);
     contentElement.addEventListener('mouseleave', hideSoon);
+    contentElement.addEventListener(
+      'wheel',
+      (event) => this.scrollPopupOnWheel(contentElement, event),
+      { passive: false }
+    );
+  }
+
+  scrollPopupOnWheel(contentElement, event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const maxScrollTop =
+      contentElement.scrollHeight - contentElement.clientHeight;
+    if (maxScrollTop <= 0 || event.deltaY === 0) return;
+
+    const deltaMultiplier =
+      event.deltaMode === 1
+        ? 16
+        : event.deltaMode === 2
+          ? contentElement.clientHeight
+          : 1;
+    const nextScrollTop =
+      contentElement.scrollTop + event.deltaY * deltaMultiplier;
+
+    contentElement.scrollTop = Math.max(
+      0,
+      Math.min(maxScrollTop, nextScrollTop)
+    );
   }
 
   pointIsInsideElement(element, point) {
@@ -879,23 +1036,83 @@ class MatchHistoryExtension {
     contentElement.classList.remove('match-history-content--fixed');
     contentElement.style.left = '';
     contentElement.style.top = '';
+    contentElement.style.bottom = '';
     contentElement.style.maxHeight = '';
     contentElement.style.overflowY = '';
   }
 
-  positionFixedPopup(triggerContainer, contentElement) {
+  positionPopup(triggerContainer, contentElement, fixedPopup) {
+    if (fixedPopup) {
+      this.positionFixedPopup(triggerContainer, contentElement);
+    } else {
+      this.positionAnchoredPopup(triggerContainer, contentElement);
+    }
+  }
+
+  getPopupVerticalPlacement(triggerRect, contentElement) {
     const margin = 12;
     const gap = 6;
-    const triggerRect = triggerContainer.getBoundingClientRect();
+    const availableBelow = window.innerHeight - triggerRect.bottom - gap - margin;
+    const availableAbove = triggerRect.top - gap - margin;
+    const naturalHeight = contentElement.scrollHeight;
+    const openAbove =
+      availableBelow < Math.min(naturalHeight, 280) &&
+      availableAbove > availableBelow;
 
+    return {
+      gap,
+      margin,
+      openAbove,
+      availableHeight: Math.max(
+        80,
+        Math.floor(openAbove ? availableAbove : availableBelow)
+      )
+    };
+  }
+
+  positionAnchoredPopup(triggerContainer, contentElement) {
+    const triggerRect = triggerContainer.getBoundingClientRect();
+    const placement = this.getPopupVerticalPlacement(
+      triggerRect,
+      contentElement
+    );
+
+    contentElement.style.maxHeight = `${placement.availableHeight}px`;
+    contentElement.style.overflowY = 'auto';
+    contentElement.style.top = placement.openAbove
+      ? 'auto'
+      : `calc(100% + ${placement.gap}px)`;
+    contentElement.style.bottom = placement.openAbove
+      ? `calc(100% + ${placement.gap}px)`
+      : 'auto';
+  }
+
+  positionFixedPopup(triggerContainer, contentElement) {
+    const triggerRect = triggerContainer.getBoundingClientRect();
+    const placement = this.getPopupVerticalPlacement(
+      triggerRect,
+      contentElement
+    );
+
+    contentElement.style.maxHeight = `${placement.availableHeight}px`;
+    contentElement.style.overflowY = 'auto';
     const popupRect = contentElement.getBoundingClientRect();
     let left = triggerRect.left + triggerRect.width / 2 - popupRect.width / 2;
-    const top = triggerRect.bottom + gap;
+    const top = placement.openAbove
+      ? triggerRect.top - placement.gap - popupRect.height
+      : triggerRect.bottom + placement.gap;
 
-    left = Math.max(margin, Math.min(left, window.innerWidth - popupRect.width - margin));
+    left = Math.max(
+      placement.margin,
+      Math.min(
+        left,
+        window.innerWidth - popupRect.width - placement.margin
+      )
+    );
 
     contentElement.style.left = `${left}px`;
     contentElement.style.top = `${top}px`;
+    contentElement.style.bottom = 'auto';
   }
 
   isUserResultsPage() {
@@ -923,30 +1140,16 @@ class MatchHistoryExtension {
 
       this.log(`Found ${result.matches.length} shared tourneys`);
 
-      if (result.matches.length === 0) {
-        let lutiBannerHTML = '';
-        const lutiInfo = this.getLutiInfo(username);
-        if (lutiInfo) {
-          const teamUrl = `https://sendou.ink/to/3192/teams/${lutiInfo.teamId}`;
-          lutiBannerHTML = `
-            <div class="luti-division-banner">
-              <span class="luti-division-label">LUTI S17</span>
-              <span class="luti-division-value">Division ${this.escapeHtml(lutiInfo.division)}</span>
-              <a href="${teamUrl}" target="_blank" class="luti-team-link">${this.escapeHtml(lutiInfo.teamName)}</a>
-            </div>
-          `;
-        }
-        contentElement.innerHTML = `
-          ${lutiBannerHTML}
-          <div class="match-history-empty">
-            No shared tourneys found between you and ${username}
-          </div>
-        `;
-        return;
-      }
-
       // Render matches with time range info
-      this.renderMatches(result.matches, result.timeRangeMonths, contentElement, username);
+      this.renderMatches(
+        result.matches,
+        result.timeRangeMonths,
+        contentElement,
+        username,
+        result.encounters,
+        result.encounterMonths,
+        result.encounterLoadFailed
+      );
     } catch (error) {
       this.error('Error loading shared tournaments:', error);
       contentElement.innerHTML = `
@@ -1087,27 +1290,35 @@ class MatchHistoryExtension {
       this.log(`User ${this.loggedInUser}: ${loggedInResults.length} tournaments`);
       this.log(`User ${username}: ${otherUserResults.length} tournaments`);
 
-      // Calculate time range for both users
-      const timeRange1 = this.calculateTimeRange(loggedInResults);
-      const timeRange2 = this.calculateTimeRange(otherUserResults);
-
-      this.log(`${this.loggedInUser} history: ${timeRange1} months`);
-      this.log(`${username} history: ${timeRange2} months`);
-
-      // Use the shorter time range, capped at 12 months
-      const timeRangeMonths = Math.min(Math.min(timeRange1, timeRange2), 12);
-      this.log(`Using time range: ${timeRangeMonths} months (shorter of the two, capped at 12)`);
+      const timeRangeMonths = this.tournamentLookbackMonths;
+      this.log(`Using tournament lookback: ${timeRangeMonths} months`);
 
       // Find common tournaments (pass username for teammate detection)
       const commonTournaments = this.findCommonTournaments(loggedInResults, otherUserResults, username);
 
       this.log(`Found ${commonTournaments.length} shared tourneys`);
 
+      const encounterMonths = timeRangeMonths;
+      let encounterResult;
+      try {
+        encounterResult = await this.fetchRecentOpponentEncounters(
+          username,
+          commonTournaments,
+          encounterMonths
+        );
+      } catch (error) {
+        this.error('Could not load opponent encounters:', error);
+        encounterResult = { encounters: [], loadFailed: true };
+      }
+
       // Return all common tournaments with time range info
       return {
         matches: commonTournaments,
         totalCommon: commonTournaments.length,
-        timeRangeMonths: timeRangeMonths
+        timeRangeMonths: timeRangeMonths,
+        encounters: encounterResult.encounters,
+        encounterMonths,
+        encounterLoadFailed: encounterResult.loadFailed
       };
     } catch (error) {
       this.error('API Error:', error);
@@ -1115,66 +1326,477 @@ class MatchHistoryExtension {
     }
   }
 
-  calculateTimeRange(tournaments) {
-    if (!tournaments || tournaments.length === 0) return 0;
+  toTimestampSeconds(value) {
+    if (typeof value === 'number') {
+      return value > 1000000000000 ? Math.floor(value / 1000) : value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`);
+      return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
+    }
+    return 0;
+  }
 
-    // Find earliest and latest tournaments
-    const timestamps = tournaments
-      .map(t => t.startTime)
-      .filter(t => t && t > 0)
-      .sort((a, b) => a - b);
+  async fetchSeasonHistoryPage(identifier, season, page) {
+    const cacheKey = `${identifier}:${season ?? 'latest'}:${page}`;
+    if (this.seasonHistoryCache.has(cacheKey)) {
+      return this.seasonHistoryCache.get(cacheKey);
+    }
 
-    if (timestamps.length === 0) return 0;
+    const request = (async () => {
+      const params = new URLSearchParams({ page: String(page) });
+      if (season != null) params.set('season', String(season));
 
-    const earliest = timestamps[0];
-    const latest = timestamps[timestamps.length - 1];
+      const response = await fetch(
+        `https://sendou.ink/u/${encodeURIComponent(identifier)}/seasons.data?${params}`
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch SendouQ history (${response.status} ${response.statusText})`
+        );
+      }
 
-    // Calculate difference in months
-    const diffMs = (latest - earliest) * 1000; // Convert to milliseconds
-    const diffMonths = Math.ceil(diffMs / (1000 * 60 * 60 * 24 * 30.44)); // Average month length
+      const data = await response.json();
+      const parent = this.findDecodedRouteData(
+        data,
+        'features/user-page/routes/u.$identifier.seasons'
+      );
+      const sets = this.findDecodedRouteData(
+        data,
+        'features/user-page/routes/u.$identifier.seasons.index'
+      );
+      if (parent?.error || sets?.error) {
+        throw new Error('SendouQ history requires an active sendou.ink login');
+      }
+      return { parent, sets };
+    })();
 
-    return Math.max(diffMonths, 1); // At least 1 month
+    this.seasonHistoryCache.set(cacheKey, request);
+    try {
+      return await request;
+    } catch (error) {
+      this.seasonHistoryCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async fetchRecentSeasonHistory(viewer, months) {
+    const cacheKey = `${viewer.id}:${months}`;
+    if (this.recentSeasonHistoryCache.has(cacheKey)) {
+      return this.recentSeasonHistoryCache.get(cacheKey);
+    }
+
+    const request = (async () => {
+      const identifier = this.getIdentityRoute(viewer);
+      const firstPage = await this.fetchSeasonHistoryPage(identifier, null, 1);
+      const seasons = [
+        ...(firstPage.parent?.seasonsParticipatedIn || [])
+      ]
+        .sort((a, b) => b - a)
+        .slice(0, this.maxSendouQSeasons);
+      const cutoff = Math.floor(
+        Date.now() / 1000 - months * 30.44 * 24 * 60 * 60
+      );
+      const results = [];
+      let truncated = false;
+
+      for (const season of seasons) {
+        let pageData =
+          season === firstPage.sets?.season
+            ? firstPage
+            : await this.fetchSeasonHistoryPage(identifier, season, 1);
+        const totalPages = pageData.sets?.results?.pagesCount || 1;
+        const pagesCount = Math.min(totalPages, this.maxSeasonPages);
+        let reachedCutoff = false;
+
+        for (let page = 1; page <= pagesCount; page++) {
+          if (page > 1) {
+            pageData = await this.fetchSeasonHistoryPage(identifier, season, page);
+          }
+          const pageResults = pageData.sets?.results?.value || [];
+          results.push(...pageResults);
+          const timestamps = pageResults
+            .map((result) => this.toTimestampSeconds(result.createdAt))
+            .filter(Boolean);
+          if (timestamps.length > 0 && Math.min(...timestamps) < cutoff) {
+            reachedCutoff = true;
+            break;
+          }
+        }
+
+        if (totalPages > pagesCount && !reachedCutoff) {
+          truncated = true;
+          break;
+        }
+
+        const seasonTimestamps = results
+          .map((result) => this.toTimestampSeconds(result.createdAt))
+          .filter(Boolean);
+        if (
+          seasonTimestamps.length > 0 &&
+          Math.min(...seasonTimestamps) < cutoff
+        ) {
+          break;
+        }
+      }
+
+      return {
+        results: results.filter(
+          (result) => this.toTimestampSeconds(result.createdAt) >= cutoff
+        ),
+        truncated
+      };
+    })();
+
+    this.recentSeasonHistoryCache.set(cacheKey, request);
+    try {
+      return await request;
+    } catch (error) {
+      this.recentSeasonHistoryCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async fetchSendouQOpponentEncounters(viewer, target, months) {
+    const history = await this.fetchRecentSeasonHistory(viewer, months);
+    const encounters = [];
+
+    for (const result of history.results) {
+      if (result.type !== 'GROUP_MATCH' || !result.groupMatch) continue;
+
+      const match = result.groupMatch;
+      const alphaIds = (match.groupAlphaMembers || []).map((user) => Number(user.id));
+      const bravoIds = (match.groupBravoMembers || []).map((user) => Number(user.id));
+      const viewerIsAlpha = alphaIds.includes(viewer.id);
+      const viewerIsBravo = bravoIds.includes(viewer.id);
+      const targetIsAlpha = alphaIds.includes(target.id);
+      const targetIsBravo = bravoIds.includes(target.id);
+
+      if (!((viewerIsAlpha && targetIsBravo) || (viewerIsBravo && targetIsAlpha))) {
+        continue;
+      }
+
+      const score = match.score || [];
+      const yourScore = viewerIsAlpha ? score[0] : score[1];
+      const theirScore = viewerIsAlpha ? score[1] : score[0];
+      encounters.push({
+        id: match.id,
+        source: 'SendouQ',
+        name: `SendouQ match #${match.id}`,
+        timestamp: this.toTimestampSeconds(result.createdAt),
+        yourScore,
+        theirScore,
+        url: `https://sendou.ink/q/match/${match.id}`
+      });
+    }
+
+    return { encounters, loadFailed: history.truncated };
+  }
+
+  async fetchTournamentBracket(tournamentId) {
+    if (this.tournamentBracketCache.has(tournamentId)) {
+      return this.tournamentBracketCache.get(tournamentId);
+    }
+
+    const request = (async () => {
+      const response = await fetch(
+        `https://sendou.ink/to/${tournamentId}/brackets.data`
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch tournament ${tournamentId} bracket (${response.status})`
+        );
+      }
+      const data = await response.json();
+      const serialized = data.find(
+        (item) =>
+          typeof item === 'string' &&
+          item.startsWith('{"tournament":')
+      );
+      if (!serialized) {
+        throw new Error(`Tournament ${tournamentId} bracket data was not found`);
+      }
+      return JSON.parse(serialized).tournament;
+    })();
+
+    this.tournamentBracketCache.set(tournamentId, request);
+    try {
+      return await request;
+    } catch (error) {
+      this.tournamentBracketCache.delete(tournamentId);
+      throw error;
+    }
+  }
+
+  async fetchTournamentOpponentEncounters(sharedTournaments, months) {
+    const cutoff = Math.floor(
+      Date.now() / 1000 - months * 30.44 * 24 * 60 * 60
+    );
+    const opponents = sharedTournaments.filter(
+      (tournament) =>
+        tournament.yourTeamId &&
+        tournament.theirTeamId &&
+        tournament.yourTeamId !== tournament.theirTeamId &&
+        this.toTimestampSeconds(tournament.date) >= cutoff
+    );
+
+    const bracketResults = await Promise.allSettled(
+      opponents.map(async (tournament) => {
+        const bracket = await this.fetchTournamentBracket(tournament.tournamentId);
+        return (bracket?.data?.match || [])
+          .filter((match) => {
+            const teamIds = [match.opponent1?.id, match.opponent2?.id];
+            return (
+              match.startedAt &&
+              Number.isFinite(match.opponent1?.score) &&
+              Number.isFinite(match.opponent2?.score) &&
+              teamIds.includes(tournament.yourTeamId) &&
+              teamIds.includes(tournament.theirTeamId)
+            );
+          })
+          .map((match) => {
+            const youAreOpponentOne =
+              match.opponent1.id === tournament.yourTeamId;
+            return {
+              id: match.id,
+              source: 'Tournament',
+              name: tournament.tournamentName,
+              timestamp: match.startedAt || this.toTimestampSeconds(tournament.date),
+              yourScore: youAreOpponentOne
+                ? match.opponent1.score
+                : match.opponent2.score,
+              theirScore: youAreOpponentOne
+                ? match.opponent2.score
+                : match.opponent1.score,
+              url: `https://sendou.ink/to/${tournament.tournamentId}/matches/${match.id}`
+            };
+          });
+      })
+    );
+
+    const encounters = [];
+    let loadFailed = false;
+    bracketResults.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        encounters.push(...result.value);
+      } else {
+        loadFailed = true;
+        this.error('Could not load a shared tournament bracket:', result.reason);
+      }
+    });
+    return { encounters, loadFailed };
+  }
+
+  async fetchRecentOpponentEncounters(username, sharedTournaments, months) {
+    const [viewer, target] = await Promise.all([
+      this.fetchUserIdentity(this.loggedInUser),
+      this.fetchUserIdentity(username)
+    ]);
+    const sourceResults = await Promise.allSettled([
+      this.fetchSendouQOpponentEncounters(viewer, target, months),
+      this.fetchTournamentOpponentEncounters(sharedTournaments, months)
+    ]);
+
+    const encounters = [];
+    let loadFailed = false;
+    sourceResults.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        if (Array.isArray(result.value)) {
+          encounters.push(...result.value);
+        } else {
+          encounters.push(...result.value.encounters);
+          loadFailed = loadFailed || result.value.loadFailed;
+        }
+      } else {
+        loadFailed = true;
+        this.error('Could not load opponent encounters:', result.reason);
+      }
+    });
+
+    return {
+      encounters: encounters
+        .filter((encounter) => encounter.timestamp)
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, this.maxEncounters),
+      loadFailed
+    };
   }
 
   async fetchUserResults(username) {
     this.log(`Fetching results for: ${username}`);
 
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) {
+      this.error(`Invalid username for tournament results: ${username}`);
+      return null;
+    }
+    const cacheKey = normalized.toLowerCase();
+    if (this.tournamentResultsMemoryCache.has(cacheKey)) {
+      return this.tournamentResultsMemoryCache.get(cacheKey);
+    }
+
+    const request = this.loadUserResults(normalized, cacheKey);
+    this.tournamentResultsMemoryCache.set(cacheKey, request);
+
     try {
-      const url = `https://sendou.ink/u/${username}/results.data?all=true`;
-      this.log(`Fetching from: ${url}`);
-      const response = await fetch(url);
-
-      this.log(`Response status for ${username}: ${response.status}`);
-
-      if (!response.ok) {
-        this.error(`API returned ${response.status} for ${username}`);
-        if (response.status === 404) {
-          this.error(`User ${username} might not exist or has no results page`);
-        }
-        throw new Error(`Failed to fetch results for ${username} (${response.status})`);
-      }
-
-      const data = await response.json();
-      this.log(`Received data for ${username}: ${data.length} items in array`);
-
-      if (!Array.isArray(data) || data.length === 0) {
-        this.error(`Invalid data format for ${username}`);
-        return [];
-      }
-
-      const parsed = this.parseResults(data);
-      this.log(`Parsed ${parsed.length} tournaments for ${username}`);
-
-      if (parsed.length === 0) {
-        this.log(`⚠️ No tournaments parsed for ${username}. Raw data length: ${data.length}`);
-        this.log(`First few items:`, data.slice(0, 5));
-      }
-
-      return parsed;
+      return await request;
     } catch (error) {
+      this.tournamentResultsMemoryCache.delete(cacheKey);
       this.error(`Error fetching results for ${username}:`, error);
       this.error(`Error details:`, error.message);
       return null;
+    }
+  }
+
+  async loadUserResults(username, cacheKey) {
+    const cached = await this.getCachedTournamentResults(cacheKey);
+    if (cached) {
+      this.log(
+        `Using cached six-month tournament history for ${username}: ${cached.length} results`
+      );
+      return cached;
+    }
+
+    const cutoff = Math.floor(
+      Date.now() / 1000 -
+        this.tournamentLookbackMonths * 30.44 * 24 * 60 * 60
+    );
+    const seenTournamentIds = new Set();
+    const results = [];
+    let page = 1;
+    let pagesCount = 1;
+    let pagesFetched = 0;
+
+    do {
+      const pageData = await this.fetchUserResultsPage(username, page);
+      pagesFetched++;
+      pagesCount = pageData.pagesCount;
+
+      for (const result of pageData.results) {
+        const startTime = this.toTimestampSeconds(result.startTime);
+        if (
+          startTime >= cutoff &&
+          !seenTournamentIds.has(result.tournamentId)
+        ) {
+          seenTournamentIds.add(result.tournamentId);
+          results.push({ ...result, startTime });
+        }
+      }
+
+      const timestamps = pageData.results
+        .map((result) => this.toTimestampSeconds(result.startTime))
+        .filter(Boolean);
+      if (
+        pageData.results.length === 0 ||
+        (timestamps.length > 0 && Math.min(...timestamps) < cutoff)
+      ) {
+        break;
+      }
+      page++;
+    } while (page <= pagesCount);
+
+    results.sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
+    await this.cacheTournamentResults(cacheKey, results);
+    this.log(
+      `Loaded ${results.length} tournaments for ${username} across ${pagesFetched} page(s)`
+    );
+    return results;
+  }
+
+  async fetchUserResultsPage(username, page) {
+    const params = new URLSearchParams({
+      all: 'true',
+      page: String(page)
+    });
+    const url =
+      `https://sendou.ink/u/${encodeURIComponent(username)}/results.data?${params}`;
+    this.log(`Fetching from: ${url}`);
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        this.error(`User ${username} might not exist or has no results page`);
+      }
+      throw new Error(
+        `Failed to fetch results for ${username} (${response.status})`
+      );
+    }
+
+    const data = await response.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error(`Invalid tournament data returned for ${username}`);
+    }
+
+    const routeData = this.findDecodedRouteData(
+      data,
+      'features/user-page/routes/u.$identifier.results'
+    );
+    const results = this.parseResults(data);
+    return {
+      results,
+      pagesCount: Math.max(1, Number(routeData?.results?.pagesCount) || 1)
+    };
+  }
+
+  async getCachedTournamentResults(cacheKey) {
+    try {
+      const stored = await chrome.storage.local.get(
+        this.tournamentResultsCacheStorageKey
+      );
+      const cache =
+        stored[this.tournamentResultsCacheStorageKey] || {};
+      const entry = cache[cacheKey];
+      if (
+        !entry ||
+        !Array.isArray(entry.results) ||
+        Date.now() - entry.cachedAt >= this.tournamentResultsCacheTtlMs
+      ) {
+        return null;
+      }
+
+      const cutoff = Math.floor(
+        Date.now() / 1000 -
+          this.tournamentLookbackMonths * 30.44 * 24 * 60 * 60
+      );
+      return entry.results.filter(
+        (result) => this.toTimestampSeconds(result.startTime) >= cutoff
+      );
+    } catch (error) {
+      this.error('Could not read the tournament results cache:', error);
+      return null;
+    }
+  }
+
+  async cacheTournamentResults(cacheKey, results) {
+    this.tournamentResultsCacheWriteQueue =
+      this.tournamentResultsCacheWriteQueue
+        .catch((error) => {
+          this.error('Previous tournament cache write failed:', error);
+        })
+        .then(async () => {
+          const stored = await chrome.storage.local.get(
+            this.tournamentResultsCacheStorageKey
+          );
+          const existing =
+            stored[this.tournamentResultsCacheStorageKey] || {};
+          const now = Date.now();
+          const cache = Object.fromEntries(
+            Object.entries(existing).filter(
+              ([, entry]) =>
+                entry &&
+                now - entry.cachedAt < this.tournamentResultsCacheTtlMs
+            )
+          );
+          cache[cacheKey] = { cachedAt: now, results };
+          await chrome.storage.local.set({
+            [this.tournamentResultsCacheStorageKey]: cache
+          });
+        });
+
+    try {
+      await this.tournamentResultsCacheWriteQueue;
+    } catch (error) {
+      this.error('Could not cache tournament results:', error);
     }
   }
 
@@ -1183,6 +1805,41 @@ class MatchHistoryExtension {
     // The format uses numeric references to look up values in the main data array
     // IMPORTANT: Handle both highlighted and non-highlighted tournaments
     try {
+      const routeData = this.findDecodedRouteData(
+        data,
+        'features/user-page/routes/u.$identifier.results'
+      );
+      const decodedResults = routeData?.results?.value;
+      if (Array.isArray(decodedResults)) {
+        const seenDecodedIds = new Set();
+        return decodedResults
+          .filter((result) => {
+            if (!result?.tournamentId || seenDecodedIds.has(result.tournamentId)) {
+              return false;
+            }
+            seenDecodedIds.add(result.tournamentId);
+            return true;
+          })
+          .map((result) => {
+            result.mates?.forEach((mate) => this.cacheUserIdentity(mate));
+            return {
+              tournamentId: result.tournamentId,
+              eventName: result.eventName || null,
+              startTime: result.startsAt || null,
+              placement: result.placement || null,
+              logoUrl: result.logoUrl || null,
+              division: result.div?.name || result.div || null,
+              teammates: (result.mates || []).flatMap((mate) =>
+                [mate.username, mate.customUrl, mate.discordId]
+                  .filter(Boolean)
+                  .map((value) => value.toLowerCase())
+              ),
+              teamCount: result.participantCount || null,
+              teamId: result.teamId || null
+            };
+          });
+      }
+
       const results = [];
       const seenIds = new Set(); // Prevent duplicates
 
@@ -1350,9 +2007,15 @@ class MatchHistoryExtension {
 
         // Check if they were teammates by looking in mates array
         const otherUsernameLower = otherUsername.toLowerCase();
-        const wereTeammates = tournament1.teammates &&
-                              tournament1.teammates.length > 0 &&
-                              tournament1.teammates.some(mate => mate.toLowerCase() === otherUsernameLower);
+        const wereTeammates =
+          (tournament1.teamId &&
+            tournament2.teamId &&
+            tournament1.teamId === tournament2.teamId) ||
+          (tournament1.teammates &&
+            tournament1.teammates.length > 0 &&
+            tournament1.teammates.some(
+              (mate) => mate.toLowerCase() === otherUsernameLower
+            ));
 
         if (wereTeammates) {
           this.log(`✓ Shared tourney found: ${tournament.tournamentId} - ${tournament1.eventName} (Teammates #${tournament1.placement || '?'})`);
@@ -1368,7 +2031,8 @@ class MatchHistoryExtension {
           yourDivision: tournament1.division,
           theirDivision: tournament2.division,
           teamCount: tournament1.teamCount,
-          wereTeammates: wereTeammates
+          wereTeammates: wereTeammates,
+          theirTeamId: tournament2.teamId
         });
       }
     }
@@ -1395,11 +2059,21 @@ class MatchHistoryExtension {
       yourDivision: t.yourDivision,
       theirDivision: t.theirDivision,
       teamCount: t.teamCount,
-      wereTeammates: t.wereTeammates
+      wereTeammates: t.wereTeammates,
+      yourTeamId: t.teamId,
+      theirTeamId: t.theirTeamId
     }));
   }
 
-  renderMatches(matches, timeRangeMonths, contentElement, username) {
+  renderMatches(
+    matches,
+    timeRangeMonths,
+    contentElement,
+    username,
+    encounters = [],
+    encounterMonths = this.encounterMonths,
+    encounterLoadFailed = false
+  ) {
     // Create header text based on number of tournaments and time range
     const count = matches.length;
     const monthText = timeRangeMonths === 1 ? 'month' : 'months';
@@ -1422,43 +2096,81 @@ class MatchHistoryExtension {
       }
     }
 
-    const html = `
-      <div class="match-history-list">
-        ${lutiBannerHTML}
-        <div class="match-history-header">${headerText}</div>
-        ${matches.map(match => {
-          // Check if they were teammates (from mates data, not just same placement)
+    const tournamentsHTML = matches.length > 0
+      ? matches.map(match => {
           const wereTeammates = match.wereTeammates;
-
           let placementHTML = '';
           if (wereTeammates) {
-            // Show teammates badge instead of separate placements
             const division = match.yourDivision || match.theirDivision;
-            placementHTML = `<span class="placement-badge placement-teammates">❤️ Teammates: #${match.yourPlacement}${division ? ` (${division})` : ''}</span>`;
+            placementHTML = `<span class="placement-badge placement-teammates">❤️ Teammates: #${match.yourPlacement}${division ? ` (${this.escapeHtml(String(division))})` : ''}</span>`;
           } else {
-            // Show separate placement badges
             placementHTML = `
-              ${match.yourPlacement ? `<span class="placement-badge placement-you">You: #${match.yourPlacement}${match.yourDivision ? ` (${match.yourDivision})` : ''}</span>` : ''}
-              ${match.theirPlacement ? `<span class="placement-badge placement-them">Them: #${match.theirPlacement}${match.theirDivision ? ` (${match.theirDivision})` : ''}</span>` : ''}
+              ${match.yourPlacement ? `<span class="placement-badge placement-you">You: #${match.yourPlacement}${match.yourDivision ? ` (${this.escapeHtml(String(match.yourDivision))})` : ''}</span>` : ''}
+              ${match.theirPlacement ? `<span class="placement-badge placement-them">Them: #${match.theirPlacement}${match.theirDivision ? ` (${this.escapeHtml(String(match.theirDivision))})` : ''}</span>` : ''}
             `;
           }
 
           const teamCountText = match.teamCount ? ` (${match.teamCount} teams)` : '';
-
           return `
-          <div class="match-history-item">
-            <a href="${match.url || '#'}" target="_blank" class="match-history-link">
-              <div class="match-tournament-name">
-                ${this.escapeHtml(match.tournamentName || 'Unknown Tournament')}${teamCountText}
-              </div>
-              <div class="match-placements">
-                ${placementHTML}
-              </div>
-              ${match.date ? `<div class="match-date">${this.formatDate(match.date)}</div>` : ''}
-            </a>
-          </div>
+            <div class="match-history-item">
+              <a href="${match.url || '#'}" target="_blank" class="match-history-link">
+                <div class="match-tournament-name">
+                  ${this.escapeHtml(match.tournamentName || 'Unknown Tournament')}${teamCountText}
+                </div>
+                <div class="match-placements">${placementHTML}</div>
+                ${match.date ? `<div class="match-date">${this.formatDate(match.date)}</div>` : ''}
+              </a>
+            </div>
           `;
-        }).join('')}
+        }).join('')
+      : `<div class="match-history-empty">No shared tourneys found between you and ${this.escapeHtml(username)}</div>`;
+
+    const encounterMonthText = encounterMonths === 1 ? 'month' : 'months';
+    let encountersHTML = encounters.map((encounter) => {
+      const hasScore =
+        Number.isFinite(encounter.yourScore) &&
+        Number.isFinite(encounter.theirScore);
+      const result =
+        !hasScore || encounter.yourScore === encounter.theirScore
+          ? ''
+          : encounter.yourScore > encounter.theirScore
+            ? 'Win'
+            : 'Loss';
+      return `
+        <div class="opponent-encounter">
+          <a href="${encounter.url}" target="_blank" class="match-history-link">
+            <div class="opponent-encounter-title">
+              <span class="opponent-encounter-source">${this.escapeHtml(encounter.source)}</span>
+              <span>${this.escapeHtml(encounter.name)}</span>
+            </div>
+            <div class="opponent-encounter-details">
+              ${hasScore ? `<span class="opponent-encounter-score">You ${encounter.yourScore}-${encounter.theirScore} Them</span>` : ''}
+              ${result ? `<span class="opponent-encounter-result opponent-encounter-result--${result.toLowerCase()}">${result}</span>` : ''}
+            </div>
+            <div class="match-date">${this.formatDate(new Date(encounter.timestamp * 1000).toISOString())}</div>
+          </a>
+        </div>
+      `;
+    }).join('');
+
+    if (!encountersHTML) {
+      encountersHTML = encounterLoadFailed
+        ? '<div class="match-history-error">Opponent history could not be fully loaded</div>'
+        : `<div class="match-history-empty">No opponent matches found in the last ${encounterMonths} ${encounterMonthText}</div>`;
+    } else if (encounterLoadFailed) {
+      encountersHTML += '<div class="opponent-encounter-warning">Some opponent history could not be loaded</div>';
+    }
+
+    const html = `
+      <div class="match-history-list">
+        ${lutiBannerHTML}
+        <div class="match-history-header">${headerText}</div>
+        ${tournamentsHTML}
+        <div class="match-history-header opponent-history-header">
+          Recent opponent matches
+          <span class="opponent-history-subtitle">Last ${encounterMonths} ${encounterMonthText}; teammate matches excluded</span>
+        </div>
+        ${encountersHTML}
       </div>
     `;
 

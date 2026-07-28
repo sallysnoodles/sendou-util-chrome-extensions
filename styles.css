@@ -52,12 +52,16 @@
 }
 
 .match-history-content {
+  box-sizing: border-box;
   position: absolute;
   top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
   min-width: 300px;
   max-width: 400px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: #ffffff;
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
@@ -78,10 +82,23 @@
   animation: resultsPageSlideIn 0.2s ease;
 }
 
-.match-history-content--fixed .match-history-list,
-.match-history-content--fixed .weapons-list {
-  max-height: none;
-  overflow-y: visible;
+.match-history-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.match-history-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.match-history-content::-webkit-scrollbar-thumb {
+  background: #c0c0c0;
+  border-radius: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .match-history-content::-webkit-scrollbar-thumb {
+    background: #555;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -149,8 +166,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 400px;
-  overflow-y: auto;
+  max-height: none;
+  overflow-y: visible;
   padding-right: 4px;
 }
 
@@ -192,8 +209,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 400px;
-  overflow-y: auto;
+  max-height: none;
+  overflow-y: visible;
   padding-right: 4px;
 }
 
@@ -333,6 +350,110 @@
   font-size: 11px;
   color: #666;
   font-weight: 400;
+}
+
+.opponent-history-header {
+  margin-top: 8px;
+}
+
+.opponent-history-subtitle {
+  display: block;
+  margin-top: 3px;
+  color: #777;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.opponent-encounter {
+  border-bottom: 1px solid #f0f0f0;
+  padding-bottom: 8px;
+}
+
+.opponent-encounter:last-child {
+  border-bottom: 0;
+}
+
+.opponent-encounter-title,
+.opponent-encounter-details {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.opponent-encounter-title {
+  color: #333;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.opponent-encounter-source {
+  border-radius: 999px;
+  background: #eef0ff;
+  color: #5364c8;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.opponent-encounter-details {
+  margin: 5px 0 2px;
+  font-size: 11px;
+}
+
+.opponent-encounter-score {
+  font-weight: 600;
+}
+
+.opponent-encounter-result {
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-weight: 700;
+}
+
+.opponent-encounter-result--win {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.opponent-encounter-result--loss {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.opponent-encounter-warning {
+  color: #b45309;
+  font-size: 10px;
+  text-align: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  .opponent-history-subtitle {
+    color: #999;
+  }
+
+  .opponent-encounter {
+    border-bottom-color: #333;
+  }
+
+  .opponent-encounter-title {
+    color: #e0e0e0;
+  }
+
+  .opponent-encounter-source {
+    background: #303650;
+    color: #bdc5ff;
+  }
+
+  .opponent-encounter-result--win {
+    background: #153d28;
+    color: #86efac;
+  }
+
+  .opponent-encounter-result--loss {
+    background: #4a2020;
+    color: #fca5a5;
+  }
 }
 
 .match-history-loading,
