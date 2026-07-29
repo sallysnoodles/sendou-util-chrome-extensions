@@ -9,14 +9,17 @@ class MatchHistoryExtension {
     this.tournamentLookbackMonths = 6;
     this.tournamentResultsCacheTtlMs = 12 * 60 * 60 * 1000;
     this.tournamentResultsCacheStorageKey = 'tournamentResultsCacheV2';
+    this.profileWeaponsCacheTtlMs = 3 * 24 * 60 * 60 * 1000;
+    this.profileWeaponsCacheStorageKey = 'profileWeaponsCacheV1';
     this.encounterMonths = 6;
     this.maxEncounters = 5;
     this.maxSendouQSeasons = 2;
     this.maxSeasonPages = 8;
-    this.lutiData = null; // LUTI division lookup: username/customUrl -> {division, teamName, teamId}
+    this.lutiData = null; // LUTI division lookup: customUrl/Discord ID -> {division, teamName, teamId}
     this.activePopup = null;
     this.processedUserCardTriggers = new WeakSet();
     this.userIdentifierCache = new Map();
+    this.userIdentifierCandidates = new Map();
     this.userIdentifierCacheInitialized = false;
     this.userIdentifierRouteKey = null;
     this.userIdentifierRoutePromise = null;
@@ -26,6 +29,8 @@ class MatchHistoryExtension {
     this.tournamentBracketCache = new Map();
     this.tournamentResultsMemoryCache = new Map();
     this.tournamentResultsCacheWriteQueue = Promise.resolve();
+    this.profileWeaponsMemoryCache = new Map();
+    this.profileWeaponsCacheWriteQueue = Promise.resolve();
     this.init();
   }
 
@@ -80,7 +85,6 @@ class MatchHistoryExtension {
       for (const team of teams) {
         const info = { division: team.division, teamName: team.teamName, teamId: team.teamId };
         for (const player of team.players) {
-          this.lutiData.set(player.username.toLowerCase(), info);
           if (player.customUrl) {
             this.lutiData.set(player.customUrl.toLowerCase(), info);
           }
@@ -404,12 +408,25 @@ class MatchHistoryExtension {
 
       const customUrl = this.getReactRouterObjectFieldValue(item, data, 'customUrl');
       const discordId = this.getReactRouterObjectFieldValue(item, data, 'discordId');
-      const identifier = this.normalizeUsername(customUrl) ||
-                         this.normalizeUsername(discordId) ||
-                         this.normalizeUsername(username);
-      if (identifier) {
-        this.userIdentifierCache.set(username.toLowerCase(), identifier);
-      }
+      const discordAvatar = this.getReactRouterObjectFieldValue(
+        item,
+        data,
+        'discordAvatar'
+      );
+      const customAvatarUrl = this.getReactRouterObjectFieldValue(
+        item,
+        data,
+        'customAvatarUrl'
+      );
+      const id = this.getReactRouterObjectFieldValue(item, data, 'id');
+      this.cacheUserIdentifierCandidate({
+        id,
+        username,
+        customUrl,
+        discordId,
+        discordAvatar,
+        customAvatarUrl
+      });
     }
   }
 
@@ -424,12 +441,7 @@ class MatchHistoryExtension {
     }
 
     if (typeof value.username === 'string') {
-      const identifier = this.normalizeUsername(value.customUrl) ||
-                         this.normalizeUsername(value.discordId) ||
-                         this.normalizeUsername(value.username);
-      if (identifier) {
-        this.userIdentifierCache.set(value.username.toLowerCase(), identifier);
-      }
+      this.cacheUserIdentifierCandidate(value);
     }
 
     for (const child of Object.values(value)) {
@@ -437,7 +449,56 @@ class MatchHistoryExtension {
     }
   }
 
-  getUserIdentifier(displayUsername) {
+  cacheUserIdentifierCandidate(user) {
+    const username =
+      typeof user?.username === 'string'
+        ? user.username.trim().toLowerCase()
+        : null;
+    if (!username) return;
+
+    const customUrl = this.normalizeUsername(user.customUrl);
+    const discordId = this.normalizeUsername(user.discordId);
+    const identifier =
+      customUrl ||
+      discordId ||
+      this.normalizeUsername(user.username);
+    if (!identifier) return;
+
+    let candidates = this.userIdentifierCandidates.get(username);
+    if (!candidates) {
+      candidates = new Map();
+      this.userIdentifierCandidates.set(username, candidates);
+    }
+    const numericId = Number(user.id ?? user.userId);
+    const identityKey = discordId
+      ? `discord:${discordId}`
+      : Number.isFinite(numericId)
+        ? `id:${numericId}`
+        : `identifier:${identifier.toLowerCase()}`;
+    const existing = candidates.get(identityKey);
+    candidates.set(identityKey, {
+      identifier: customUrl || existing?.identifier || identifier,
+      discordId:
+        (user.discordId ? String(user.discordId) : null) ||
+        existing?.discordId ||
+        null,
+      discordAvatar:
+        user.discordAvatar || existing?.discordAvatar || null,
+      customAvatarUrl:
+        user.customAvatarUrl || existing?.customAvatarUrl || null
+    });
+
+    if (candidates.size === 1) {
+      this.userIdentifierCache.set(
+        username,
+        candidates.values().next().value.identifier
+      );
+    } else {
+      this.userIdentifierCache.delete(username);
+    }
+  }
+
+  getUserIdentifier(displayUsername, trigger = null) {
     const exactDisplayName =
       typeof displayUsername === 'string'
         ? displayUsername.trim().toLowerCase()
@@ -445,11 +506,46 @@ class MatchHistoryExtension {
     if (exactDisplayName && this.userIdentifierCache.has(exactDisplayName)) {
       return this.userIdentifierCache.get(exactDisplayName);
     }
+    if (exactDisplayName) {
+      const candidates = this.userIdentifierCandidates.get(exactDisplayName);
+      if (candidates?.size > 1) {
+        return this.resolveUserIdentifierFromTrigger(candidates, trigger);
+      }
+    }
 
     const normalized = this.normalizeUsername(displayUsername);
     if (!normalized) return null;
 
     return this.userIdentifierCache.get(normalized.toLowerCase()) || normalized.toLowerCase();
+  }
+
+  resolveUserIdentifierFromTrigger(candidates, trigger) {
+    if (!trigger) return null;
+
+    const imageSources = Array.from(trigger.querySelectorAll('img'))
+      .flatMap((image) => [
+        image.currentSrc,
+        image.getAttribute('src'),
+        image.getAttribute('data-src')
+      ])
+      .filter(Boolean)
+      .map((source) => source.toLowerCase());
+    if (imageSources.length === 0) return null;
+
+    const matches = Array.from(candidates.values()).filter((candidate) => {
+      const identityParts = [
+        candidate.discordId,
+        candidate.discordAvatar,
+        candidate.customAvatarUrl
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase());
+      return identityParts.some((part) =>
+        imageSources.some((source) => source.includes(part))
+      );
+    });
+
+    return matches.length === 1 ? matches[0].identifier : null;
   }
 
   async cacheUserIdentifiersFromCurrentRoute() {
@@ -735,7 +831,7 @@ class MatchHistoryExtension {
         continue;
       }
 
-      const username = this.getUserIdentifier(displayUsername);
+      const username = this.getUserIdentifier(displayUsername, trigger);
       if (!username ||
           (this.loggedInUser &&
            (displayUsername.toLowerCase() === this.loggedInUser.toLowerCase() ||
@@ -1175,30 +1271,7 @@ class MatchHistoryExtension {
     this.log(`Loading weapons for: ${username}`);
 
     try {
-      // Fetch the user's profile page HTML
-      const profileUrl = `https://sendou.ink/u/${username}`;
-      this.log(`Fetching profile page: ${profileUrl}`);
-
-      const response = await fetch(profileUrl);
-
-      if (!response.ok) {
-        this.error(`Failed to fetch profile page: ${response.status}`);
-        contentElement.innerHTML = `
-          <div class="match-history-error">
-            Failed to load profile page (${response.status})
-          </div>
-        `;
-        return;
-      }
-
-      const html = await response.text();
-      this.log(`Fetched HTML, length: ${html.length}`);
-
-      // Parse the HTML
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-
-      const weapons = this.extractWeaponsFromProfile(doc);
+      const weapons = await this.fetchProfileWeapons(username);
       this.log(`Total weapons extracted: ${weapons.length}`);
 
       if (weapons.length === 0) {
@@ -1220,6 +1293,106 @@ class MatchHistoryExtension {
           ${this.DEBUG ? `<br><small style="opacity:0.7">Error: ${error.message}</small>` : ''}
         </div>
       `;
+    }
+  }
+
+  async fetchProfileWeapons(username) {
+    const normalized = this.normalizeUsername(username);
+    if (!normalized) {
+      throw new Error(`Invalid profile identifier: ${username}`);
+    }
+
+    const cacheKey = normalized.toLowerCase();
+    if (this.profileWeaponsMemoryCache.has(cacheKey)) {
+      return this.profileWeaponsMemoryCache.get(cacheKey);
+    }
+
+    const request = this.loadProfileWeapons(normalized, cacheKey);
+    this.profileWeaponsMemoryCache.set(cacheKey, request);
+    try {
+      return await request;
+    } catch (error) {
+      this.profileWeaponsMemoryCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async loadProfileWeapons(username, cacheKey) {
+    const cached = await this.getCachedProfileWeapons(cacheKey);
+    if (cached !== null) {
+      this.log(
+        `Using cached profile weapons for ${username}: ${cached.length} weapons`
+      );
+      return cached;
+    }
+
+    const profileUrl =
+      `https://sendou.ink/u/${encodeURIComponent(username)}`;
+    this.log(`Fetching profile page: ${profileUrl}`);
+    const response = await fetch(profileUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to load profile page (${response.status})`);
+    }
+
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const weapons = this.extractWeaponsFromProfile(doc);
+    await this.cacheProfileWeapons(cacheKey, weapons);
+    return weapons;
+  }
+
+  async getCachedProfileWeapons(cacheKey) {
+    try {
+      const stored = await chrome.storage.local.get(
+        this.profileWeaponsCacheStorageKey
+      );
+      const cache = stored[this.profileWeaponsCacheStorageKey] || {};
+      const entry = cache[cacheKey];
+      if (
+        !entry ||
+        !Array.isArray(entry.weapons) ||
+        Date.now() - entry.cachedAt >= this.profileWeaponsCacheTtlMs
+      ) {
+        return null;
+      }
+      return entry.weapons;
+    } catch (error) {
+      this.error('Could not read the profile weapons cache:', error);
+      return null;
+    }
+  }
+
+  async cacheProfileWeapons(cacheKey, weapons) {
+    this.profileWeaponsCacheWriteQueue =
+      this.profileWeaponsCacheWriteQueue
+        .catch((error) => {
+          this.error('Previous profile weapons cache write failed:', error);
+        })
+        .then(async () => {
+          const stored = await chrome.storage.local.get(
+            this.profileWeaponsCacheStorageKey
+          );
+          const existing =
+            stored[this.profileWeaponsCacheStorageKey] || {};
+          const now = Date.now();
+          const cache = Object.fromEntries(
+            Object.entries(existing).filter(
+              ([, entry]) =>
+                entry &&
+                now - entry.cachedAt < this.profileWeaponsCacheTtlMs
+            )
+          );
+          cache[cacheKey] = { cachedAt: now, weapons };
+          await chrome.storage.local.set({
+            [this.profileWeaponsCacheStorageKey]: cache
+          });
+        });
+
+    try {
+      await this.profileWeaponsCacheWriteQueue;
+    } catch (error) {
+      this.error('Could not cache profile weapons:', error);
     }
   }
 

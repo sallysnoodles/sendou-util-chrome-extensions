@@ -68,6 +68,7 @@ img[data-testid][src*="/img/main-weapons"]
 ```
 
 Relative image URLs are converted to absolute sendou.ink URLs.
+Parsed weapon lists, including empty lists, are cached in `chrome.storage.local` for three days.
 
 ## File Structure
 
@@ -84,7 +85,7 @@ icons/                 Extension icons
 
 ## Permissions
 
-- `storage`: saves settings, detected usernames, and the 12-hour tournament-results cache
+- `storage`: saves settings, detected usernames, the 12-hour tournament-results cache, and the three-day profile-weapons cache
 - `https://sendou.ink/*`: reads sendou pages and profile/results data
 
 ## Development
