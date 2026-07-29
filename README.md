@@ -56,7 +56,7 @@ https://sendou.ink/u/{username}/results.data?all=true&page={page}
 
 Pages are fetched until the extension crosses the six-month cutoff or reaches the final page. Parsed per-user results are cached in `chrome.storage.local` for 12 hours. `parseResults(data)` decodes the Remix-style flat array and extracts tournament records. `findCommonTournaments()` matches both users by `tournamentId`, sorts newest first, and identifies teammates by exact tournament team ID with parsed `mates` as a compatibility fallback.
 
-The popup also scans the viewer's recent SendouQ season history and shared tournament brackets. An encounter is included only when the two user IDs appear on opposite SendouQ sides or their distinct tournament team IDs appear in the same completed bracket match. Teammate sets are excluded.
+The popup also scans the viewer's recent SendouQ season history and shared tournament brackets. An encounter is included only when the two user IDs appear on opposite SendouQ sides or their distinct tournament team IDs appear in the same completed bracket match. Tournament sets appear beneath their corresponding tournament result, while SendouQ sets remain in the recent-opponents section. Teammate sets are excluded.
 
 ### Weapons
 

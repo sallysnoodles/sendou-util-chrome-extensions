@@ -427,6 +427,32 @@
   text-align: center;
 }
 
+.tournament-set-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0 8px;
+  border-left: 2px solid #d9ddf7;
+  padding-left: 8px;
+}
+
+.tournament-set-encounter {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.tournament-set-encounter .match-history-link {
+  padding: 5px 6px;
+}
+
+.tournament-set-encounter .opponent-encounter-title {
+  font-size: 11px;
+}
+
+.tournament-set-encounter .opponent-encounter-details {
+  margin-bottom: 0;
+}
+
 @media (prefers-color-scheme: dark) {
   .opponent-history-subtitle {
     color: #999;
@@ -443,6 +469,10 @@
   .opponent-encounter-source {
     background: #303650;
     color: #bdc5ff;
+  }
+
+  .tournament-set-list {
+    border-left-color: #3b4267;
   }
 
   .opponent-encounter-result--win {

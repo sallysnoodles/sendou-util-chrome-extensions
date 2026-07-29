@@ -438,6 +438,14 @@ class MatchHistoryExtension {
   }
 
   getUserIdentifier(displayUsername) {
+    const exactDisplayName =
+      typeof displayUsername === 'string'
+        ? displayUsername.trim().toLowerCase()
+        : null;
+    if (exactDisplayName && this.userIdentifierCache.has(exactDisplayName)) {
+      return this.userIdentifierCache.get(exactDisplayName);
+    }
+
     const normalized = this.normalizeUsername(displayUsername);
     if (!normalized) return null;
 
@@ -761,7 +769,7 @@ class MatchHistoryExtension {
       }
 
       const username = this.normalizeUsername(directText);
-      if (username) return username;
+      if (username) return directText;
     }
 
     return null;
@@ -1146,9 +1154,11 @@ class MatchHistoryExtension {
         result.timeRangeMonths,
         contentElement,
         username,
-        result.encounters,
+        result.sendouQEncounters,
+        result.sendouQAvailable,
+        result.tournamentEncounters,
         result.encounterMonths,
-        result.encounterLoadFailed
+        result.tournamentLoadFailed
       );
     } catch (error) {
       this.error('Error loading shared tournaments:', error);
@@ -1299,26 +1309,22 @@ class MatchHistoryExtension {
       this.log(`Found ${commonTournaments.length} shared tourneys`);
 
       const encounterMonths = timeRangeMonths;
-      let encounterResult;
-      try {
-        encounterResult = await this.fetchRecentOpponentEncounters(
-          username,
-          commonTournaments,
-          encounterMonths
-        );
-      } catch (error) {
-        this.error('Could not load opponent encounters:', error);
-        encounterResult = { encounters: [], loadFailed: true };
-      }
+      const encounterResult = await this.fetchRecentOpponentEncounters(
+        username,
+        commonTournaments,
+        encounterMonths
+      );
 
       // Return all common tournaments with time range info
       return {
         matches: commonTournaments,
         totalCommon: commonTournaments.length,
         timeRangeMonths: timeRangeMonths,
-        encounters: encounterResult.encounters,
+        sendouQEncounters: encounterResult.sendouQEncounters,
+        sendouQAvailable: encounterResult.sendouQAvailable,
+        tournamentEncounters: encounterResult.tournamentEncounters,
         encounterMonths,
-        encounterLoadFailed: encounterResult.loadFailed
+        tournamentLoadFailed: encounterResult.tournamentLoadFailed
       };
     } catch (error) {
       this.error('API Error:', error);
@@ -1559,8 +1565,9 @@ class MatchHistoryExtension {
               match.opponent1.id === tournament.yourTeamId;
             return {
               id: match.id,
+              tournamentId: tournament.tournamentId,
               source: 'Tournament',
-              name: tournament.tournamentName,
+              name: `Set #${match.id}`,
               timestamp: match.startedAt || this.toTimestampSeconds(tournament.date),
               yourScore: youAreOpponentOne
                 ? match.opponent1.score
@@ -1588,37 +1595,48 @@ class MatchHistoryExtension {
   }
 
   async fetchRecentOpponentEncounters(username, sharedTournaments, months) {
-    const [viewer, target] = await Promise.all([
+    const sendouQRequest = Promise.all([
       this.fetchUserIdentity(this.loggedInUser),
       this.fetchUserIdentity(username)
-    ]);
-    const sourceResults = await Promise.allSettled([
-      this.fetchSendouQOpponentEncounters(viewer, target, months),
+    ]).then(([viewer, target]) =>
+      this.fetchSendouQOpponentEncounters(viewer, target, months)
+    );
+    const [sendouQResult, tournamentResult] = await Promise.allSettled([
+      sendouQRequest,
       this.fetchTournamentOpponentEncounters(sharedTournaments, months)
     ]);
 
-    const encounters = [];
-    let loadFailed = false;
-    sourceResults.forEach((result) => {
-      if (result.status === 'fulfilled') {
-        if (Array.isArray(result.value)) {
-          encounters.push(...result.value);
-        } else {
-          encounters.push(...result.value.encounters);
-          loadFailed = loadFailed || result.value.loadFailed;
-        }
-      } else {
-        loadFailed = true;
-        this.error('Could not load opponent encounters:', result.reason);
-      }
-    });
+    let sendouQEncounters = [];
+    const sendouQAvailable = sendouQResult.status === 'fulfilled';
+    if (sendouQAvailable) {
+      sendouQEncounters = sendouQResult.value.encounters;
+    } else {
+      this.error('Could not load SendouQ opponent encounters:', sendouQResult.reason);
+    }
+
+    let tournamentEncounters = [];
+    let tournamentLoadFailed = false;
+    if (tournamentResult.status === 'fulfilled') {
+      tournamentEncounters = tournamentResult.value.encounters;
+      tournamentLoadFailed = tournamentResult.value.loadFailed;
+    } else {
+      tournamentLoadFailed = true;
+      this.error(
+        'Could not load tournament opponent encounters:',
+        tournamentResult.reason
+      );
+    }
 
     return {
-      encounters: encounters
+      sendouQEncounters: sendouQEncounters
         .filter((encounter) => encounter.timestamp)
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, this.maxEncounters),
-      loadFailed
+      sendouQAvailable,
+      tournamentEncounters: tournamentEncounters
+        .filter((encounter) => encounter.timestamp)
+        .sort((a, b) => b.timestamp - a.timestamp),
+      tournamentLoadFailed
     };
   }
 
@@ -2070,9 +2088,11 @@ class MatchHistoryExtension {
     timeRangeMonths,
     contentElement,
     username,
-    encounters = [],
+    sendouQEncounters = [],
+    sendouQAvailable = true,
+    tournamentEncounters = [],
     encounterMonths = this.encounterMonths,
-    encounterLoadFailed = false
+    tournamentLoadFailed = false
   ) {
     // Create header text based on number of tournaments and time range
     const count = matches.length;
@@ -2096,6 +2116,14 @@ class MatchHistoryExtension {
       }
     }
 
+    const tournamentEncountersById = new Map();
+    tournamentEncounters.forEach((encounter) => {
+      const tournamentSets =
+        tournamentEncountersById.get(encounter.tournamentId) || [];
+      tournamentSets.push(encounter);
+      tournamentEncountersById.set(encounter.tournamentId, tournamentSets);
+    });
+
     const tournamentsHTML = matches.length > 0
       ? matches.map(match => {
           const wereTeammates = match.wereTeammates;
@@ -2111,6 +2139,20 @@ class MatchHistoryExtension {
           }
 
           const teamCountText = match.teamCount ? ` (${match.teamCount} teams)` : '';
+          const tournamentSets = tournamentEncountersById.get(
+            match.tournamentId
+          ) || [];
+          const tournamentSetsHTML = tournamentSets.length > 0
+            ? `
+              <div class="tournament-set-list">
+                ${tournamentSets
+                  .map((encounter) =>
+                    this.renderOpponentEncounter(encounter, { compact: true })
+                  )
+                  .join('')}
+              </div>
+            `
+            : '';
           return `
             <div class="match-history-item">
               <a href="${match.url || '#'}" target="_blank" class="match-history-link">
@@ -2120,61 +2162,70 @@ class MatchHistoryExtension {
                 <div class="match-placements">${placementHTML}</div>
                 ${match.date ? `<div class="match-date">${this.formatDate(match.date)}</div>` : ''}
               </a>
+              ${tournamentSetsHTML}
             </div>
           `;
         }).join('')
       : `<div class="match-history-empty">No shared tourneys found between you and ${this.escapeHtml(username)}</div>`;
 
     const encounterMonthText = encounterMonths === 1 ? 'month' : 'months';
-    let encountersHTML = encounters.map((encounter) => {
-      const hasScore =
-        Number.isFinite(encounter.yourScore) &&
-        Number.isFinite(encounter.theirScore);
-      const result =
-        !hasScore || encounter.yourScore === encounter.theirScore
-          ? ''
-          : encounter.yourScore > encounter.theirScore
-            ? 'Win'
-            : 'Loss';
-      return `
-        <div class="opponent-encounter">
-          <a href="${encounter.url}" target="_blank" class="match-history-link">
-            <div class="opponent-encounter-title">
-              <span class="opponent-encounter-source">${this.escapeHtml(encounter.source)}</span>
-              <span>${this.escapeHtml(encounter.name)}</span>
-            </div>
-            <div class="opponent-encounter-details">
-              ${hasScore ? `<span class="opponent-encounter-score">You ${encounter.yourScore}-${encounter.theirScore} Them</span>` : ''}
-              ${result ? `<span class="opponent-encounter-result opponent-encounter-result--${result.toLowerCase()}">${result}</span>` : ''}
-            </div>
-            <div class="match-date">${this.formatDate(new Date(encounter.timestamp * 1000).toISOString())}</div>
-          </a>
+    const sendouQEncountersHTML = sendouQEncounters
+      .map((encounter) => this.renderOpponentEncounter(encounter))
+      .join('');
+    const sendouQSectionHTML =
+      sendouQAvailable && sendouQEncounters.length > 0
+      ? `
+        <div class="match-history-header opponent-history-header">
+          Recent opponent matches
+          <span class="opponent-history-subtitle">SendouQ · Last ${encounterMonths} ${encounterMonthText}; teammate matches excluded</span>
         </div>
-      `;
-    }).join('');
-
-    if (!encountersHTML) {
-      encountersHTML = encounterLoadFailed
-        ? '<div class="match-history-error">Opponent history could not be fully loaded</div>'
-        : `<div class="match-history-empty">No opponent matches found in the last ${encounterMonths} ${encounterMonthText}</div>`;
-    } else if (encounterLoadFailed) {
-      encountersHTML += '<div class="opponent-encounter-warning">Some opponent history could not be loaded</div>';
-    }
+        ${sendouQEncountersHTML}
+      `
+      : '';
+    const tournamentWarningHTML = tournamentLoadFailed
+      ? '<div class="opponent-encounter-warning">Some tournament set history could not be loaded</div>'
+      : '';
 
     const html = `
       <div class="match-history-list">
         ${lutiBannerHTML}
         <div class="match-history-header">${headerText}</div>
         ${tournamentsHTML}
-        <div class="match-history-header opponent-history-header">
-          Recent opponent matches
-          <span class="opponent-history-subtitle">Last ${encounterMonths} ${encounterMonthText}; teammate matches excluded</span>
-        </div>
-        ${encountersHTML}
+        ${tournamentWarningHTML}
+        ${sendouQSectionHTML}
       </div>
     `;
 
     contentElement.innerHTML = html;
+  }
+
+  renderOpponentEncounter(encounter, options = {}) {
+    const hasScore =
+      Number.isFinite(encounter.yourScore) &&
+      Number.isFinite(encounter.theirScore);
+    const result =
+      !hasScore || encounter.yourScore === encounter.theirScore
+        ? ''
+        : encounter.yourScore > encounter.theirScore
+          ? 'Win'
+          : 'Loss';
+    const compactClass = options.compact ? ' tournament-set-encounter' : '';
+
+    return `
+      <div class="opponent-encounter${compactClass}">
+        <a href="${encounter.url}" target="_blank" class="match-history-link">
+          <div class="opponent-encounter-title">
+            ${options.compact ? '' : `<span class="opponent-encounter-source">${this.escapeHtml(encounter.source)}</span>`}
+            <span>${this.escapeHtml(encounter.name)}</span>
+          </div>
+          <div class="opponent-encounter-details">
+            ${hasScore ? `<span class="opponent-encounter-score">You ${encounter.yourScore}-${encounter.theirScore} Them</span>` : ''}
+            ${result ? `<span class="opponent-encounter-result opponent-encounter-result--${result.toLowerCase()}">${result}</span>` : ''}
+          </div>
+          ${options.compact ? '' : `<div class="match-date">${this.formatDate(new Date(encounter.timestamp * 1000).toISOString())}</div>`}
+        </a>
+      </div>
+    `;
   }
 
   escapeHtml(text) {
