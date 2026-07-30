@@ -513,10 +513,53 @@ class MatchHistoryExtension {
       }
     }
 
+    const avatarMatchedIdentifier = trigger
+      ? this.resolveUserIdentifierFromAnyTrigger(trigger)
+      : null;
+    if (avatarMatchedIdentifier) {
+      this.log(
+        `Resolved "${displayUsername}" from trigger avatar:`,
+        avatarMatchedIdentifier
+      );
+      return avatarMatchedIdentifier;
+    }
+
+    if (this.isGenericUserCardLabel(displayUsername)) {
+      this.log(`Skipping generic user-card label: "${displayUsername}"`);
+      return null;
+    }
+
     const normalized = this.normalizeUsername(displayUsername);
     if (!normalized) return null;
 
     return this.userIdentifierCache.get(normalized.toLowerCase()) || normalized.toLowerCase();
+  }
+
+  isGenericUserCardLabel(label) {
+    if (typeof label !== 'string') return false;
+
+    return /^(?:\d+\s+)?mutual friends?$/i.test(label.trim());
+  }
+
+  resolveUserIdentifierFromAnyTrigger(trigger) {
+    const matches = [];
+
+    for (const candidates of this.userIdentifierCandidates.values()) {
+      const identifier = this.resolveUserIdentifierFromTrigger(
+        candidates,
+        trigger
+      );
+      if (identifier) matches.push(identifier);
+    }
+
+    const uniqueMatches = Array.from(
+      new Map(matches.map((identifier) => [
+        identifier.toLowerCase(),
+        identifier
+      ])).values()
+    );
+
+    return uniqueMatches.length === 1 ? uniqueMatches[0] : null;
   }
 
   resolveUserIdentifierFromTrigger(candidates, trigger) {
