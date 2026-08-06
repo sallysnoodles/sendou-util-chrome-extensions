@@ -8,7 +8,7 @@ class MatchHistoryExtension {
     this.showWeapons = true; // Default to true
     this.tournamentLookbackMonths = 6;
     this.tournamentResultsCacheTtlMs = 12 * 60 * 60 * 1000;
-    this.tournamentResultsCacheStorageKey = 'tournamentResultsCacheV2';
+    this.tournamentResultsCacheStorageKey = 'tournamentResultsCacheV3';
     this.profileWeaponsCacheTtlMs = 3 * 24 * 60 * 60 * 1000;
     this.profileWeaponsCacheStorageKey = 'profileWeaponsCacheV1';
     this.encounterMonths = 6;
@@ -1939,13 +1939,13 @@ class MatchHistoryExtension {
 
   async fetchUserResultsPage(username, page) {
     const params = new URLSearchParams({
-      all: 'true',
+      highlightsOnly: 'false',
       page: String(page)
     });
     const url =
       `https://sendou.ink/u/${encodeURIComponent(username)}/results.data?${params}`;
     this.log(`Fetching from: ${url}`);
-    const response = await fetch(url);
+    const response = await fetch(url, { credentials: 'include' });
 
     if (!response.ok) {
       if (response.status === 404) {
