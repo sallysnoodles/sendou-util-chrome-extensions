@@ -394,6 +394,8 @@
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .opponent-encounter-details {

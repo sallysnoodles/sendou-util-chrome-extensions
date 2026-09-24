@@ -5,7 +5,7 @@ Chrome extension for [sendou.ink](https://sendou.ink/) that adds hover popups ne
 ## Features
 
 - 📊 Shared tournament popup between you and another user
-- ⚔️ Recent SendouQ and tournament sets where you played on opposing teams
+- ⚔️ Recent SendouQ matches with teammates or opponents, plus tournament opponent sets
 - 🔫 Weapon popup from the hovered user's profile
 - ❤️ Teammate badge when the parsed `mates` data confirms you were on the same team
 - 🏆 Tournament names, dates, placements, divisions, team counts, and links
@@ -56,7 +56,7 @@ https://sendou.ink/u/{username}/results.data?highlightsOnly=false&page={page}
 
 The authenticated request explicitly disables sendou.ink's highlight-only filter. Pages are fetched until the extension crosses the six-month cutoff or reaches the final page. Parsed per-user results are cached in `chrome.storage.local` for 12 hours. `parseResults(data)` decodes the Remix-style flat array and extracts tournament records. `findCommonTournaments()` matches both users by `tournamentId`, sorts newest first, and identifies teammates by exact tournament team ID with parsed `mates` as a compatibility fallback.
 
-The popup also scans the viewer's recent SendouQ season history and shared tournament brackets. An encounter is included only when the two user IDs appear on opposite SendouQ sides or their distinct tournament team IDs appear in the same completed bracket match. Tournament sets appear beneath their corresponding tournament result, while SendouQ sets remain in the recent-opponents section. Teammate sets are excluded.
+The popup also scans the viewer's recent SendouQ season history and shared tournament brackets. SendouQ encounters include both same-side teammates and opposite-side opponents, with labels and score wording that reflect the relationship. Completed tournament sets are included when the users' distinct tournament team IDs appear in the same bracket match. Tournament sets appear beneath their corresponding tournament result, while SendouQ sets remain in their own recent-match section.
 
 ### Weapons
 

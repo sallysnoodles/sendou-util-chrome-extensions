@@ -988,7 +988,7 @@ class MatchHistoryExtension {
       const tournamentsToggle = document.createElement(useButtonToggle ? 'button' : 'span');
       tournamentsToggle.className = 'match-history-toggle';
       tournamentsToggle.textContent = '📊';
-      tournamentsToggle.title = 'View tournament and opponent history';
+      tournamentsToggle.title = 'View tournament and match history';
 
       const tournamentsContent = document.createElement('div');
       tournamentsContent.className = 'match-history-content';
@@ -1525,7 +1525,7 @@ class MatchHistoryExtension {
       this.log(`Found ${commonTournaments.length} shared tourneys`);
 
       const encounterMonths = timeRangeMonths;
-      const encounterResult = await this.fetchRecentOpponentEncounters(
+      const encounterResult = await this.fetchRecentEncounters(
         username,
         commonTournaments,
         encounterMonths
@@ -1679,35 +1679,48 @@ class MatchHistoryExtension {
     }
   }
 
-  async fetchSendouQOpponentEncounters(viewer, target, months) {
+  async fetchSendouQEncounters(viewer, target, months) {
+    if (String(viewer.id) === String(target.id)) {
+      return { encounters: [], loadFailed: false };
+    }
+
     const history = await this.fetchRecentSeasonHistory(viewer, months);
     const encounters = [];
+    const viewerId = String(viewer.id);
+    const targetId = String(target.id);
 
     for (const result of history.results) {
       if (result.type !== 'GROUP_MATCH' || !result.groupMatch) continue;
 
       const match = result.groupMatch;
-      const alphaIds = (match.groupAlphaMembers || []).map((user) => Number(user.id));
-      const bravoIds = (match.groupBravoMembers || []).map((user) => Number(user.id));
-      const viewerIsAlpha = alphaIds.includes(viewer.id);
-      const viewerIsBravo = bravoIds.includes(viewer.id);
-      const targetIsAlpha = alphaIds.includes(target.id);
-      const targetIsBravo = bravoIds.includes(target.id);
+      const alphaIds = (match.groupAlphaMembers || []).map((user) => String(user.id));
+      const bravoIds = (match.groupBravoMembers || []).map((user) => String(user.id));
+      const viewerSide = alphaIds.includes(viewerId)
+        ? 'alpha'
+        : bravoIds.includes(viewerId)
+          ? 'bravo'
+          : null;
+      const targetSide = alphaIds.includes(targetId)
+        ? 'alpha'
+        : bravoIds.includes(targetId)
+          ? 'bravo'
+          : null;
 
-      if (!((viewerIsAlpha && targetIsBravo) || (viewerIsBravo && targetIsAlpha))) {
+      if (!viewerSide || !targetSide) {
         continue;
       }
 
       const score = match.score || [];
-      const yourScore = viewerIsAlpha ? score[0] : score[1];
-      const theirScore = viewerIsAlpha ? score[1] : score[0];
+      const viewerScoreIndex = viewerSide === 'alpha' ? 0 : 1;
+      const relationship = viewerSide === targetSide ? 'teammate' : 'opponent';
       encounters.push({
         id: match.id,
         source: 'SendouQ',
-        name: `SendouQ match #${match.id}`,
+        relationship,
+        name: `Match #${match.id}`,
         timestamp: this.toTimestampSeconds(result.createdAt),
-        yourScore,
-        theirScore,
+        yourScore: score[viewerScoreIndex],
+        theirScore: score[viewerScoreIndex === 0 ? 1 : 0],
         url: `https://sendou.ink/q/match/${match.id}`
       });
     }
@@ -1810,12 +1823,12 @@ class MatchHistoryExtension {
     return { encounters, loadFailed };
   }
 
-  async fetchRecentOpponentEncounters(username, sharedTournaments, months) {
+  async fetchRecentEncounters(username, sharedTournaments, months) {
     const sendouQRequest = Promise.all([
       this.fetchUserIdentity(this.loggedInUser),
       this.fetchUserIdentity(username)
     ]).then(([viewer, target]) =>
-      this.fetchSendouQOpponentEncounters(viewer, target, months)
+      this.fetchSendouQEncounters(viewer, target, months)
     );
     const [sendouQResult, tournamentResult] = await Promise.allSettled([
       sendouQRequest,
@@ -2392,8 +2405,8 @@ class MatchHistoryExtension {
       sendouQAvailable && sendouQEncounters.length > 0
       ? `
         <div class="match-history-header opponent-history-header">
-          Recent opponent matches
-          <span class="opponent-history-subtitle">SendouQ · Last ${encounterMonths} ${encounterMonthText}; teammate matches excluded</span>
+          Recent SendouQ matches
+          <span class="opponent-history-subtitle">Last ${encounterMonths} ${encounterMonthText} · teammates and opponents</span>
         </div>
         ${sendouQEncountersHTML}
       `
@@ -2419,6 +2432,10 @@ class MatchHistoryExtension {
     const hasScore =
       Number.isFinite(encounter.yourScore) &&
       Number.isFinite(encounter.theirScore);
+    const isTeammate = encounter.relationship === 'teammate';
+    const sourceLabel = encounter.relationship
+      ? (isTeammate ? 'Teammate' : 'Opponent')
+      : encounter.source;
     const result =
       !hasScore || encounter.yourScore === encounter.theirScore
         ? ''
@@ -2431,11 +2448,11 @@ class MatchHistoryExtension {
       <div class="opponent-encounter${compactClass}">
         <a href="${encounter.url}" target="_blank" class="match-history-link">
           <div class="opponent-encounter-title">
-            ${options.compact ? '' : `<span class="opponent-encounter-source">${this.escapeHtml(encounter.source)}</span>`}
+            ${options.compact ? '' : `<span class="opponent-encounter-source">${this.escapeHtml(sourceLabel)}</span>`}
             <span>${this.escapeHtml(encounter.name)}</span>
           </div>
           <div class="opponent-encounter-details">
-            ${hasScore ? `<span class="opponent-encounter-score">You ${encounter.yourScore}-${encounter.theirScore} Them</span>` : ''}
+            ${hasScore ? `<span class="opponent-encounter-score">${isTeammate ? 'Team' : 'You'} ${encounter.yourScore}-${encounter.theirScore} ${isTeammate ? 'Opponents' : 'Them'}</span>` : ''}
             ${result ? `<span class="opponent-encounter-result opponent-encounter-result--${result.toLowerCase()}">${result}</span>` : ''}
           </div>
           ${options.compact ? '' : `<div class="match-date">${this.formatDate(new Date(encounter.timestamp * 1000).toISOString())}</div>`}
