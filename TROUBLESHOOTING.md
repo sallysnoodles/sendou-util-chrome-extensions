@@ -76,13 +76,13 @@ Other checks:
 The extension fetches both users' tournament result data:
 
 ```text
-https://sendou.ink/u/{username}/results.data?all=true
+https://sendou.ink/u/{username}/results.data?highlightsOnly=false&page=1
 ```
 
 Manual test from a sendou.ink page:
 
 ```javascript
-await fetch("/u/yourUsername/results.data?all=true").then(r => r.json());
+await fetch("/u/yourUsername/results.data?highlightsOnly=false&page=1").then(r => r.json());
 ```
 
 Common causes:
@@ -96,7 +96,7 @@ Common causes:
 
 This can be correct. The extension compares parsed tournament IDs from both users and only shows tournaments found in both histories.
 
-It does not show individual match history or head-to-head wins/losses.
+Completed head-to-head tournament sets appear beneath a shared tournament when both users have distinct team IDs and those teams can be found together in the tournament's bracket data. Recent SendouQ teammate and opponent matches appear in a separate section.
 
 ## Teammates Look Wrong
 

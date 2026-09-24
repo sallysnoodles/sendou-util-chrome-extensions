@@ -1728,14 +1728,19 @@ class MatchHistoryExtension {
     return { encounters, loadFailed: history.truncated };
   }
 
-  async fetchTournamentBracket(tournamentId) {
-    if (this.tournamentBracketCache.has(tournamentId)) {
-      return this.tournamentBracketCache.get(tournamentId);
+  async fetchTournamentBracket(tournamentId, bracketIdx = null, groupId = null) {
+    const cacheKey = `${tournamentId}:${bracketIdx ?? 'default'}:${groupId ?? 'default'}`;
+    if (this.tournamentBracketCache.has(cacheKey)) {
+      return this.tournamentBracketCache.get(cacheKey);
     }
 
     const request = (async () => {
+      const params = new URLSearchParams();
+      if (bracketIdx != null) params.set('idx', String(bracketIdx));
+      if (groupId != null) params.set('group', String(groupId));
+      const query = params.toString();
       const response = await fetch(
-        `https://sendou.ink/to/${tournamentId}/brackets.data`
+        `https://sendou.ink/to/${tournamentId}/brackets.data${query ? `?${query}` : ''}`
       );
       if (!response.ok) {
         throw new Error(
@@ -1748,19 +1753,92 @@ class MatchHistoryExtension {
           typeof item === 'string' &&
           item.startsWith('{"tournament":')
       );
-      if (!serialized) {
+      const tournament = serialized
+        ? JSON.parse(serialized).tournament
+        : null;
+      const routeData = this.findDecodedRouteData(
+        data,
+        'features/tournament-bracket/routes/to.$id.brackets'
+      );
+      const legacyBracket = tournament?.data?.match ? tournament : null;
+      const bracket = routeData?.bracket || legacyBracket;
+      if (!bracket) {
         throw new Error(`Tournament ${tournamentId} bracket data was not found`);
       }
-      return JSON.parse(serialized).tournament;
+      return {
+        bracketIdx: routeData?.bracketIdx ?? bracketIdx,
+        groupId: routeData?.groupId ?? groupId,
+        bracket,
+        bracketsMeta: tournament?.bracketsMeta || []
+      };
     })();
 
-    this.tournamentBracketCache.set(tournamentId, request);
+    this.tournamentBracketCache.set(cacheKey, request);
     try {
       return await request;
     } catch (error) {
-      this.tournamentBracketCache.delete(tournamentId);
+      this.tournamentBracketCache.delete(cacheKey);
       throw error;
     }
+  }
+
+  async fetchTournamentBracketMatches(tournamentId, yourTeamId, theirTeamId) {
+    const initialPage = await this.fetchTournamentBracket(tournamentId);
+    const yourTeamKey = String(yourTeamId);
+    const theirTeamKey = String(theirTeamId);
+    const bracketsMeta = initialPage.bracketsMeta || [];
+    const matchingBracketIndexes = bracketsMeta
+      .map((meta, index) => ({ meta, index }))
+      .filter(({ meta }) => {
+        const participantIds = (meta.participantTournamentTeamIds || [])
+          .map((id) => String(id));
+        return (
+          participantIds.includes(yourTeamKey) &&
+          participantIds.includes(theirTeamKey)
+        );
+      })
+      .map(({ index }) => index);
+
+    if (bracketsMeta.length > 0 && matchingBracketIndexes.length === 0) {
+      return [];
+    }
+
+    const bracketIndexes = matchingBracketIndexes.length > 0
+      ? matchingBracketIndexes
+      : [initialPage.bracketIdx].filter((index) => index != null);
+    const bracketPages = bracketIndexes.length > 0
+      ? await Promise.all(
+          bracketIndexes.map((index) =>
+            index === initialPage.bracketIdx
+              ? initialPage
+              : this.fetchTournamentBracket(tournamentId, index)
+          )
+        )
+      : [initialPage];
+    const pagesByBracket = await Promise.all(
+      bracketPages.map(async (page) => {
+        if (page.bracket?.type !== 'swiss') return [page];
+
+        const groupIds = (page.bracket?.data?.group || [])
+          .map((group) => group.id)
+          .filter((id) => id != null);
+        if (groupIds.length === 0) return [page];
+        return Promise.all(
+          groupIds.map((id) =>
+            id === page.groupId
+              ? page
+              : this.fetchTournamentBracket(tournamentId, page.bracketIdx, id)
+          )
+        );
+      })
+    );
+    const matches = pagesByBracket
+      .flat(2)
+      .flatMap((page) => page.bracket?.data?.match || []);
+
+    return Array.from(
+      new Map(matches.map((match) => [String(match.id), match])).values()
+    );
   }
 
   async fetchTournamentOpponentEncounters(sharedTournaments, months) {
@@ -1771,27 +1849,38 @@ class MatchHistoryExtension {
       (tournament) =>
         tournament.yourTeamId &&
         tournament.theirTeamId &&
-        tournament.yourTeamId !== tournament.theirTeamId &&
+        String(tournament.yourTeamId) !== String(tournament.theirTeamId) &&
         this.toTimestampSeconds(tournament.date) >= cutoff
     );
 
     const bracketResults = await Promise.allSettled(
       opponents.map(async (tournament) => {
-        const bracket = await this.fetchTournamentBracket(tournament.tournamentId);
-        return (bracket?.data?.match || [])
+        const matches = await this.fetchTournamentBracketMatches(
+          tournament.tournamentId,
+          tournament.yourTeamId,
+          tournament.theirTeamId
+        );
+        const yourTeamKey = String(tournament.yourTeamId);
+        const theirTeamKey = String(tournament.theirTeamId);
+        return matches
           .filter((match) => {
-            const teamIds = [match.opponent1?.id, match.opponent2?.id];
+            const teamIds = [
+              String(match.opponent1?.id),
+              String(match.opponent2?.id)
+            ];
             return (
               match.startedAt &&
-              Number.isFinite(match.opponent1?.score) &&
-              Number.isFinite(match.opponent2?.score) &&
-              teamIds.includes(tournament.yourTeamId) &&
-              teamIds.includes(tournament.theirTeamId)
+              match.opponent1?.score != null &&
+              match.opponent2?.score != null &&
+              Number.isFinite(Number(match.opponent1.score)) &&
+              Number.isFinite(Number(match.opponent2.score)) &&
+              teamIds.includes(yourTeamKey) &&
+              teamIds.includes(theirTeamKey)
             );
           })
           .map((match) => {
             const youAreOpponentOne =
-              match.opponent1.id === tournament.yourTeamId;
+              String(match.opponent1.id) === yourTeamKey;
             return {
               id: match.id,
               tournamentId: tournament.tournamentId,
@@ -1799,11 +1888,11 @@ class MatchHistoryExtension {
               name: `Set #${match.id}`,
               timestamp: match.startedAt || this.toTimestampSeconds(tournament.date),
               yourScore: youAreOpponentOne
-                ? match.opponent1.score
-                : match.opponent2.score,
+                ? Number(match.opponent1.score)
+                : Number(match.opponent2.score),
               theirScore: youAreOpponentOne
-                ? match.opponent2.score
-                : match.opponent1.score,
+                ? Number(match.opponent2.score)
+                : Number(match.opponent1.score),
               url: `https://sendou.ink/to/${tournament.tournamentId}/matches/${match.id}`
             };
           });
